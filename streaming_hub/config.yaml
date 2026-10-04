@@ -21,6 +21,8 @@ options:
   custom_dns: cloudflare
   stream_port: 8099
   tmdb_api_key: ''
+  anime_preferred_language: all
+  anime_enable_tab: true
   profiles:
     - id: default
       name: Principale
@@ -33,10 +35,13 @@ options:
 schema:
   log_level: list(trace|debug|info|notice|warning|error|fatal)
   country: str?
+  anime_preferred_language: list(all|dub_only|sub_only)?
+  anime_enable_tab: bool?
   custom_sources:
     - url: url
-      type: list(auto|reactive|crawler)?
+      type: list(auto|reactive|crawler|anime)?
       name: str?
+      enabled: bool?
   custom_dns: list(cloudflare|google|quad9|system)
   stream_port: port
   tmdb_api_key: str?

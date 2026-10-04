@@ -16,13 +16,14 @@ USER_AGENT = (
 # Internal heuristic keyword patterns
 _REACTIVE_KEYWORDS = ("community", "strcom", "sc-", "vix")
 _CRAWLER_KEYWORDS = ("cineblog", "cb01", "film-streaming")
+_ANIME_KEYWORDS = ("anime", "anim")
 
 
 class SourceDetector:
     """Detects and fingerprints the streaming engine/provider from a given base URL.
 
     Supports:
-    - Explicit type definition ('reactive', 'crawler')
+    - Explicit type definition ('reactive', 'crawler', 'anime')
     - URL heuristics (matching known domain or path structure)
     - Active HTTP fingerprinting (probing HTML markup, headers, and SPA tags)
     """
@@ -32,6 +33,10 @@ class SourceDetector:
         """Attempt fast heuristic detection based on domain and URL keywords."""
         parsed = urlparse(url)
         domain = (parsed.netloc or parsed.path).lower()
+
+        # Anime engine patterns
+        if any(keyword in domain for keyword in _ANIME_KEYWORDS):
+            return "anime"
 
         # Reactive engine patterns
         if any(keyword in domain for keyword in _REACTIVE_KEYWORDS):
@@ -85,6 +90,16 @@ class SourceDetector:
                     if "streaming" in html.lower() or "vixcloud" in html.lower() or "vixsrc" in html.lower():
                         return "reactive"
 
+                # Check for anime catalog markers
+                if (
+                    "<archivio" in html
+                    or "/info_api/" in html
+                    or "video-player anime=" in html
+                    or "layout-items" in html
+                    or "/archivio/get-animes" in html
+                ):
+                    return "anime"
+
                 # Check for crawler markers (post cards, video headers, category templates)
                 if (
                     "card-video" in html
@@ -113,11 +128,13 @@ class SourceDetector:
     ) -> str:
         """Determine provider type given a URL and optional user override.
 
-        Returns one of: 'reactive', 'crawler', or 'unknown'.
+        Returns one of: 'reactive', 'crawler', 'anime', or 'unknown'.
         """
         user_type = (user_specified_type or "auto").strip().lower()
 
         # 1. Explicit user selection (including silent backward compatibility)
+        if user_type in ("anime", "anime_engine", "engine_anime", "au"):
+            return "anime"
         if user_type in ("reactive", "spa", "engine_alpha", "type_a", "streamingcommunity", "sc"):
             return "reactive"
         if user_type in ("crawler", "html", "engine_beta", "type_b", "cb01", "cineblog"):

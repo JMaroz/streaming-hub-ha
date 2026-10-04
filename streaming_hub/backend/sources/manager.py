@@ -118,15 +118,20 @@ class SourceManager:
         if not carousel_sources:
             return None, []
 
+        combined_carousels: list[dict[str, Any]] = []
+        primary_hero: Movie | TvSeries | None = None
+
         for src in carousel_sources:
             try:
                 hero, carousels = await src.get_carousels()
+                if not primary_hero and hero:
+                    primary_hero = hero
                 if carousels:
-                    return hero, carousels
+                    combined_carousels.extend(carousels)
             except Exception as err:
                 _LOGGER.warning("Error fetching home carousels from %s: %s", src.source_id, err)
 
-        return None, []
+        return primary_hero, combined_carousels
 
     async def search(
         self,

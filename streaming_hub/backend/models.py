@@ -77,6 +77,8 @@ class Movie:
     trakt_id: int | None = None
     certification: str | None = None
     is_adult: bool = False
+    is_anime: bool = False
+    dub_type: str | None = None  # "sub" or "dub"
     catalogs: list[str] = field(default_factory=list)
     watch_providers: dict[str, Any] = field(default_factory=dict)
 
@@ -117,6 +119,8 @@ class Movie:
             "rating": self.rating,
             "certification": self.certification,
             "is_adult": self.is_adult,
+            "is_anime": self.is_anime,
+            "dub_type": self.dub_type,
             "cast": self.cast,
             "director": self.director,
             "source_a_url": self.source_a_url,
@@ -150,6 +154,8 @@ class Movie:
             rating=data.get("rating"),
             certification=data.get("certification"),
             is_adult=bool(data.get("is_adult", False)),
+            is_anime=bool(data.get("is_anime", False)),
+            dub_type=data.get("dub_type"),
             cast=data.get("cast", []),
             director=data.get("director"),
             source_a_url=data.get("source_a_url") or data.get("streamingcommunity_url", ""),
@@ -248,6 +254,8 @@ class TvSeries:
     trakt_id: int | None = None
     certification: str | None = None
     is_adult: bool = False
+    is_anime: bool = False
+    dub_type: str | None = None  # "sub" or "dub"
     catalogs: list[str] = field(default_factory=list)
     watch_providers: dict[str, Any] = field(default_factory=dict)
 
@@ -287,6 +295,8 @@ class TvSeries:
             "rating": self.rating,
             "certification": self.certification,
             "is_adult": self.is_adult,
+            "is_anime": self.is_anime,
+            "dub_type": self.dub_type,
             "cast": self.cast,
             "director": self.director,
             "source_a_url": self.source_a_url,
@@ -318,6 +328,8 @@ class TvSeries:
             rating=data.get("rating"),
             certification=data.get("certification"),
             is_adult=bool(data.get("is_adult", False)),
+            is_anime=bool(data.get("is_anime", False)),
+            dub_type=data.get("dub_type"),
             cast=data.get("cast", []),
             director=data.get("director"),
             source_a_url=data.get("source_a_url") or data.get("streamingcommunity_url", ""),

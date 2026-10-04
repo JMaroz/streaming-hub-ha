@@ -20,6 +20,7 @@
     profiles: [],
     favoritesSet: new Set(),
     activeType: "all",
+    animeDubFilter: "all",
     activeGenre: null,
     activeSource: "all",
     availableSources: [],
@@ -94,7 +95,11 @@
     btnGenresToggle: document.getElementById("btn-genres-toggle"),
     genresBar: document.getElementById("genres-bar"),
     genresList: document.getElementById("genres-list"),
+    navTabAnime: document.getElementById("nav-tab-anime"),
+    sourcesFilterBar: document.getElementById("sources-filter-bar"),
     sourcesChips: document.getElementById("sources-chips"),
+    animeFiltersBar: document.getElementById("anime-filters-bar"),
+    animeChips: document.getElementById("anime-chips"),
     searchInput: document.getElementById("search-input"),
     searchClear: document.getElementById("search-clear"),
     heroSection: document.getElementById("hero-section"),
@@ -302,6 +307,18 @@
     elements.btnGenresToggle.addEventListener("click", () => {
       elements.genresBar.classList.toggle("hidden");
     });
+
+    // Anime Audio Filter Chips
+    if (elements.animeChips) {
+      elements.animeChips.querySelectorAll(".source-chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+          elements.animeChips.querySelectorAll(".source-chip").forEach((c) => c.classList.remove("active"));
+          chip.classList.add("active");
+          state.animeDubFilter = chip.dataset.dub || "all";
+          loadCatalog();
+        });
+      });
+    }
 
     // Search Input with Debounce
     let searchTimeout = null;
@@ -924,6 +941,10 @@
       if (resp.ok) {
         state.availableSources = await resp.json();
         renderSourcesChips();
+        const hasAnime = state.availableSources.some((s) => s.id === "anime" && s.enabled);
+        if (elements.navTabAnime) {
+          elements.navTabAnime.classList.toggle("hidden", !hasAnime);
+        }
       }
     } catch (err) {
       console.warn("Could not load sources:", err);
@@ -1087,7 +1108,18 @@
     let titleText = "Ultimi Arrivi";
     if (state.activeType === "movie") titleText = "Ultimi Film";
     if (state.activeType === "tv") titleText = "Ultime Serie TV";
+    if (state.activeType === "anime") titleText = "Catalogo Anime";
     elements.sectionTitle.textContent = titleText;
+
+    if (elements.animeFiltersBar && elements.sourcesFilterBar) {
+      if (state.activeType === "anime") {
+        elements.animeFiltersBar.classList.remove("hidden");
+        elements.sourcesFilterBar.classList.add("hidden");
+      } else {
+        elements.animeFiltersBar.classList.add("hidden");
+        elements.sourcesFilterBar.classList.remove("hidden");
+      }
+    }
 
     try {
       if (isHome && page === 1 && !append) {
@@ -1118,9 +1150,12 @@
         elements.homeCarouselsSection.classList.add("hidden");
       }
 
-      const url = apiUrl(
+      let url = apiUrl(
         `api/catalog/latest?type=${state.activeType}&source=${state.activeSource}&page=${page}&profile_id=${encodeURIComponent(state.activeProfileId)}`
       );
+      if (state.activeType === "anime" && state.animeDubFilter) {
+        url += `&dub=${encodeURIComponent(state.animeDubFilter)}`;
+      }
       const resp = await fetch(url);
       if (!resp.ok) throw new Error("Network response was not ok");
       const data = await resp.json();
@@ -1407,6 +1442,27 @@
     card.dataset.title = item.title || "";
     card.dataset.year = item.year || "";
 
+
+    // Mini streaming provider logos overlay on card (Canonical & Deduplicated)
+    const avail =
+      item.streaming_availability ||
+      (item.watch_providers &&
+        (item.watch_providers["IT"] || item.watch_providers[Object.keys(item.watch_providers)[0]]));
+    const miniProvidersHtml = buildMiniProvidersHtml(avail);
+
+    const isAnime =
+      item.is_anime ||
+      (item.catalogs && item.catalogs.includes("anime")) ||
+      (item.genres && item.genres.includes("Anime"));
+    let dubBadgeHtml = "";
+    if (isAnime) {
+      if (item.dub_type === "dub" || (item.title && item.title.includes("(ITA)"))) {
+        dubBadgeHtml = `<span class="card-badge-dub" style="background:#0284c7;color:#fff;font-size:0.7rem;padding:2px 6px;border-radius:4px;font-weight:600;">ITA</span>`;
+      } else {
+        dubBadgeHtml = `<span class="card-badge-sub" style="background:#7c3aed;color:#fff;font-size:0.7rem;padding:2px 6px;border-radius:4px;font-weight:600;">SUB ITA</span>`;
+      }
+    }
+
     // Determine catalog badges
     let catalogsList = [];
     if (item.catalogs && item.catalogs.length > 0) {
@@ -1417,6 +1473,8 @@
       catalogsList = ["reactive"];
     } else if (item.source_b_url || (item.id && item.id.startsWith("cb-"))) {
       catalogsList = ["crawler"];
+    } else if (item.id && item.id.startsWith("anime-")) {
+      catalogsList = ["anime"];
     }
 
     let catalogsHtml = "";
@@ -1442,6 +1500,9 @@
               } else if (lower.includes("crawler")) {
                 badgeClass += " badge-source-crawler";
                 display = "Web";
+              } else if (lower.includes("anime")) {
+                badgeClass += " badge-source-anime";
+                display = "Anime";
               } else {
                 badgeClass += " badge-source-generic";
                 display = cat;
@@ -1453,18 +1514,12 @@
       `;
     }
 
-    // Mini streaming provider logos overlay on card (Canonical & Deduplicated)
-    const avail =
-      item.streaming_availability ||
-      (item.watch_providers &&
-        (item.watch_providers["IT"] || item.watch_providers[Object.keys(item.watch_providers)[0]]));
-    const miniProvidersHtml = buildMiniProvidersHtml(avail);
-
     card.innerHTML = `
       <div class="card-poster-wrap">
         <img class="card-poster" src="${posterSrc}" alt="${escapeHtml(item.title)}" loading="lazy" onerror="this.onerror=null;this.src='${DEFAULT_POSTER_SVG}';">
         <div class="card-badges">
           <span class="card-badge-type">${typeLabel}</span>
+          ${dubBadgeHtml}
           ${certBadgeHtml}
           ${ratingLabel ? `<span class="card-badge-rating">${ratingLabel}</span>` : ""}
         </div>

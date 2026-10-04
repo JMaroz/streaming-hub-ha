@@ -27,6 +27,7 @@
           <button class="nav-tab active" data-type="all">Tutti</button>
           <button class="nav-tab" data-type="movie">Film</button>
           <button class="nav-tab" data-type="tv">Serie TV</button>
+          <button class="nav-tab hidden" data-type="anime" id="nav-tab-anime">Anime</button>
           <button class="nav-tab" data-type="favorites">Preferiti</button>
           <button class="nav-tab" data-type="watched">Visti</button>
           <button class="nav-tab" id="btn-genres-toggle">Generi ▾</button>
@@ -176,9 +177,17 @@
         <div class="section-header">
           <div class="header-left">
             <h2 id="section-title" class="section-title">Ultimi Arrivi</h2>
-            <div class="sources-filter-bar">
+            <div class="sources-filter-bar" id="sources-filter-bar">
               <span class="filter-label">Sorgenti:</span>
               <div id="sources-chips" class="sources-chips"></div>
+            </div>
+            <div class="sources-filter-bar hidden" id="anime-filters-bar">
+              <span class="filter-label">Audio:</span>
+              <div id="anime-chips" class="sources-chips">
+                <button class="source-chip active" data-dub="all"><span class="source-chip-dot"></span>Tutti</button>
+                <button class="source-chip" data-dub="sub_only"><span class="source-chip-dot"></span>SUB ITA</button>
+                <button class="source-chip" data-dub="dub_only"><span class="source-chip-dot"></span>Doppiati (ITA)</button>
+              </div>
             </div>
           </div>
           <span id="section-count" class="section-count"></span>

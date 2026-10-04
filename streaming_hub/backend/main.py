@@ -34,6 +34,7 @@ from .rating_filter import (
     is_title_allowed_for_profile,
 )
 from .skip_segments import SkipSegmentManager
+from .sources.anime_source import AnimeSource
 from .sources.crawler_source import CrawlerSource
 from .sources.detector import SourceDetector
 from .sources.manager import SourceManager
@@ -66,6 +67,8 @@ def load_options() -> dict[str, Any]:
         "custom_dns": os.getenv("CUSTOM_DNS", DNS_DEFAULT),
         "tmdb_api_key": os.getenv("TMDB_API_KEY", ""),
         "stream_port": int(os.getenv("STREAM_PORT", "8099")),
+        "anime_preferred_language": os.getenv("ANIME_PREFERRED_LANGUAGE", "all"),
+        "anime_enable_tab": os.getenv("ANIME_ENABLE_TAB", "true").lower() in ("true", "1", "yes"),
         "custom_sources": parsed_sources,
         "profiles": [],
     }
@@ -102,6 +105,10 @@ def load_options() -> dict[str, Any]:
     cb_env = os.getenv("SOURCE_BETA_BASE_URL", "").strip() or os.getenv("CB01_BASE_URL", "").strip()
     if cb_env and not any(s["url"] == cb_env for s in normalized_sources):
         normalized_sources.append({"url": cb_env, "type": "crawler", "name": "Sorgente Web", "enabled": True})
+
+    anime_env = os.getenv("SOURCE_ANIME_BASE_URL", "").strip() or os.getenv("ANIME_BASE_URL", "").strip()
+    if anime_env and not any(s["url"] == anime_env for s in normalized_sources):
+        normalized_sources.append({"url": anime_env, "type": "anime", "name": "Sorgente Anime", "enabled": True})
 
     options["custom_sources"] = normalized_sources
 
@@ -195,6 +202,15 @@ async def init_sources(sources_list: list[dict[str, Any]], custom_dns: str) -> N
                         custom_dns=custom_dns,
                         enabled=is_enabled,
                         name=custom_name or "Sorgente Web",
+                    )
+                )
+            elif detected_type in ("anime", "engine_anime"):
+                source_manager.register_source(
+                    AnimeSource(
+                        base_url=url,
+                        custom_dns=custom_dns,
+                        enabled=is_enabled,
+                        name=custom_name or "Sorgente Anime",
                     )
                 )
             else:
@@ -627,6 +643,8 @@ async def get_settings() -> dict[str, Any]:
         "custom_dns": CONFIG.get("custom_dns", DNS_DEFAULT),
         "configured_sources": CONFIG.get("custom_sources", []),
         "active_sources": source_manager.list_sources(),
+        "anime_preferred_language": CONFIG.get("anime_preferred_language", "all"),
+        "anime_enable_tab": CONFIG.get("anime_enable_tab", True),
         "tmdb_configured": bool(key),
         "tmdb_key_masked": masked_key,
     }
@@ -666,7 +684,7 @@ async def test_source_url(req: TestSourceRequest) -> dict[str, Any]:
         "url": clean_url,
         "specified_type": req.type,
         "detected_type": detected,
-        "supported": detected in ("reactive", "crawler", "streamingcommunity", "cb01"),
+        "supported": detected in ("reactive", "crawler", "anime", "streamingcommunity", "cb01"),
     }
 
 
@@ -848,9 +866,69 @@ async def get_home_catalog(
     }
 
 
+@app.get("/api/catalog/anime")
+async def get_anime_catalog(
+    page: int = Query(1, ge=1),
+    source: str = Query("all"),
+    dub: str = Query("all", pattern="^(all|sub_only|dub_only)$"),
+    profile_id: str = Query("default"),
+    min_rating: float | None = Query(None),
+    sort_by: str = Query("latest", pattern="^(latest|rating|year|alpha)$"),
+) -> dict[str, Any]:
+    """Retrieve paginated anime catalog with dub filtering and sorting."""
+    profile = get_profile_by_id(profile_id)
+    active_dub = dub
+    if active_dub == "all":
+        cfg_dub = CONFIG.get("anime_preferred_language", "all")
+        if cfg_dub in ("sub_only", "dub_only"):
+            active_dub = cfg_dub
+
+    anime_src = source_manager.get_source("anime")
+    if anime_src and anime_src.is_enabled and hasattr(anime_src, "get_latest_anime"):
+        items = await anime_src.get_latest_anime(page=page, dub_filter=active_dub)
+    else:
+        items = await source_manager.get_by_genre("Anime", media_type="tv", source_filter=source, page=page)
+        if active_dub == "dub_only":
+            items = [it for it in items if getattr(it, "dub_type", None) == "dub"]
+        elif active_dub == "sub_only":
+            items = [it for it in items if getattr(it, "dub_type", None) == "sub"]
+
+    await db.enrich_items_with_cached_metadata(items)
+    filtered = [it for it in items if is_title_allowed_for_profile(it, profile)]
+
+    if min_rating is not None:
+        filtered = [item for item in filtered if (item.rating or 0.0) >= min_rating]
+
+    if sort_by == "rating":
+        filtered.sort(key=lambda x: x.rating or 0.0, reverse=True)
+    elif sort_by == "year":
+        filtered.sort(key=lambda x: x.year or 0, reverse=True)
+    elif sort_by == "alpha":
+        filtered.sort(key=lambda x: (x.title or "").lower())
+
+    results = [item.to_dict() for item in filtered]
+    active_country = (getattr(profile, "country", None) or CONFIG.get("country", "IT")).upper()
+    for r in results:
+        r["streaming_availability"] = extract_streaming_availability(r, active_country)
+
+    from_idx = (page - 1) * 30 + 1 if results else 0
+    to_idx = from_idx + len(results) - 1 if results else 0
+
+    return {
+        "page": page,
+        "source": source,
+        "profile_id": profile.id,
+        "dub": active_dub,
+        "count": len(results),
+        "from": from_idx,
+        "to": to_idx,
+        "results": results,
+    }
+
+
 @app.get("/api/catalog/latest")
 async def get_latest(
-    type: str = Query("all", pattern="^(all|movie|tv)$"),
+    type: str = Query("all", pattern="^(all|movie|tv|anime)$"),
     source: str = Query("all"),
     page: int = Query(1, ge=1),
     profile_id: str = Query("default"),
@@ -860,6 +938,16 @@ async def get_latest(
     sort_by: str = Query("latest", pattern="^(latest|rating|year|alpha)$"),
 ) -> dict[str, Any]:
     """Retrieve latest titles across enabled sources with rating filter, multi-criteria filters and sorting."""
+    if type == "anime":
+        return await get_anime_catalog(
+            page=page,
+            source=source,
+            dub="all",
+            profile_id=profile_id,
+            min_rating=min_rating,
+            sort_by=sort_by,
+        )
+
     profile = get_profile_by_id(profile_id)
     max_rating = get_profile_max_rating(profile)
 
@@ -944,7 +1032,7 @@ async def get_latest(
 @app.get("/api/catalog/search")
 async def search_catalog(
     q: str = Query(..., min_length=1),
-    type: str = Query("all", pattern="^(all|movie|tv)$"),
+    type: str = Query("all", pattern="^(all|movie|tv|anime)$"),
     source: str = Query("all"),
     profile_id: str = Query("default"),
     year_min: int | None = Query(None),
@@ -955,7 +1043,16 @@ async def search_catalog(
     """Search catalog by title across enabled sources filtered for active profile with optional sorting."""
     profile = get_profile_by_id(profile_id)
     query = q.strip()
-    items = await source_manager.search(query, media_type=type, source_filter=source)
+    search_type = "all" if type == "anime" else type
+    items = await source_manager.search(query, media_type=search_type, source_filter=source)
+    if type == "anime":
+        items = [
+            it
+            for it in items
+            if getattr(it, "is_anime", False)
+            or "anime" in getattr(it, "catalogs", [])
+            or any("anim" in g.lower() for g in getattr(it, "genres", []))
+        ]
     await db.enrich_items_with_cached_metadata(items)
     filtered = [item for item in items if is_title_allowed_for_profile(item, profile)]
 
