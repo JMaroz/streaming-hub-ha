@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.7.0](https://github.com/JMaroz/streaming-hub-ha/compare/v2.6.1...v2.7.0) (2026-10-04)
+
+
+### Features
+
+* **anime:** add dedicated anime streaming engine and source adapter ([de2c58a](https://github.com/JMaroz/streaming-hub-ha/commit/de2c58aec89bcaf30ba0c62203ad189c8d1cf202))
+
+
+### Bug Fixes
+
+* **player:** prevent premature outro cut-off and season loop on series completion ([193b4f0](https://github.com/JMaroz/streaming-hub-ha/commit/193b4f024278ade87ff26494d3be0f7d6194dc12))
+
 ## [2.6.1](https://github.com/JMaroz/streaming-hub-ha/compare/v2.6.0...v2.6.1) (2026-10-03)
 
 
