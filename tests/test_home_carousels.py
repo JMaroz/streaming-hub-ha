@@ -1,4 +1,4 @@
-"""Unit tests for home thematic carousels, CB01 grid fallback, and parental control pruning."""
+"""Unit tests for home thematic carousels, crawler grid fallback, and parental control pruning."""
 
 from __future__ import annotations
 
@@ -90,8 +90,8 @@ class TestHomeCarousels:
         assert crawler.has_carousels is False
 
     @pytest.mark.asyncio
-    async def test_source_manager_cb01_only_returns_no_carousels(self) -> None:
-        """Test that if only CB01 (crawler) is enabled, manager returns no carousels (grid mode)."""
+    async def test_source_manager_crawler_only_returns_no_carousels(self) -> None:
+        """Test that if only crawler source is enabled, manager returns no carousels (grid mode)."""
         manager = SourceManager()
         crawler = CrawlerSource(base_url="https://cb.example.com", enabled=True)
         manager.register_source(crawler)
@@ -242,26 +242,30 @@ class TestHomeCarousels:
         client = ReactiveStreamClient(base_url="https://streaming.example.com/")
 
         empty_props = json.dumps({"props": {"sliders": []}})
-        movies_props = json.dumps({
-            "props": {
-                "sliders": [
-                    {
-                        "name": "trending",
-                        "titles": [{"id": 501, "name": "Film Popolare", "slug": "film-pop", "type": "movie"}],
-                    }
-                ]
+        movies_props = json.dumps(
+            {
+                "props": {
+                    "sliders": [
+                        {
+                            "name": "trending",
+                            "titles": [{"id": 501, "name": "Film Popolare", "slug": "film-pop", "type": "movie"}],
+                        }
+                    ]
+                }
             }
-        })
-        tv_props = json.dumps({
-            "props": {
-                "sliders": [
-                    {
-                        "name": "trending",
-                        "titles": [{"id": 601, "name": "Serie Popolare", "slug": "serie-pop", "type": "tv"}],
-                    }
-                ]
+        )
+        tv_props = json.dumps(
+            {
+                "props": {
+                    "sliders": [
+                        {
+                            "name": "trending",
+                            "titles": [{"id": 601, "name": "Serie Popolare", "slug": "serie-pop", "type": "tv"}],
+                        }
+                    ]
+                }
             }
-        })
+        )
 
         async def mock_request_side_effect(url: str, headers: dict | None = None) -> str:
             if "movies" in url:
@@ -279,4 +283,3 @@ class TestHomeCarousels:
             assert len(carousels) == 2
             assert carousels[0]["title"] == "Film del Momento"
             assert carousels[1]["title"] == "Serie TV del Momento"
-

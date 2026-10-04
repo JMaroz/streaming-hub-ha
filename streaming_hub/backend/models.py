@@ -87,22 +87,6 @@ class Movie:
     added_at: datetime | None = None
     updated_at: datetime | None = None
 
-    @property
-    def streamingcommunity_url(self) -> str:
-        return self.source_a_url
-
-    @streamingcommunity_url.setter
-    def streamingcommunity_url(self, val: str) -> None:
-        self.source_a_url = val
-
-    @property
-    def cb01_url(self) -> str:
-        return self.source_b_url
-
-    @cb01_url.setter
-    def cb01_url(self, val: str) -> None:
-        self.source_b_url = val
-
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -158,8 +142,8 @@ class Movie:
             dub_type=data.get("dub_type"),
             cast=data.get("cast", []),
             director=data.get("director"),
-            source_a_url=data.get("source_a_url") or data.get("streamingcommunity_url", ""),
-            source_b_url=data.get("source_b_url") or data.get("cb01_url", ""),
+            source_a_url=data.get("source_a_url", ""),
+            source_b_url=data.get("source_b_url", ""),
             tmdb_id=data.get("tmdb_id"),
             imdb_id=data.get("imdb_id"),
             trakt_id=data.get("trakt_id"),
@@ -264,22 +248,6 @@ class TvSeries:
     added_at: datetime | None = None
     updated_at: datetime | None = None
 
-    @property
-    def streamingcommunity_url(self) -> str:
-        return self.source_a_url
-
-    @streamingcommunity_url.setter
-    def streamingcommunity_url(self, val: str) -> None:
-        self.source_a_url = val
-
-    @property
-    def cb01_url(self) -> str:
-        return self.source_b_url
-
-    @cb01_url.setter
-    def cb01_url(self, val: str) -> None:
-        self.source_b_url = val
-
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -332,8 +300,8 @@ class TvSeries:
             dub_type=data.get("dub_type"),
             cast=data.get("cast", []),
             director=data.get("director"),
-            source_a_url=data.get("source_a_url") or data.get("streamingcommunity_url", ""),
-            source_b_url=data.get("source_b_url") or data.get("cb01_url", ""),
+            source_a_url=data.get("source_a_url", ""),
+            source_b_url=data.get("source_b_url", ""),
             tmdb_id=data.get("tmdb_id"),
             imdb_id=data.get("imdb_id"),
             trakt_id=data.get("trakt_id"),

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -19,7 +19,7 @@ class TestAnimeStreamClient:
 
     def test_clean_title_sub(self) -> None:
         client = AnimeStreamClient(base_url="https://anime.local")
-        title, year, dub_type = client._clean_title("Solo Leveling (SUB ITA)")
+        title, _year, dub_type = client._clean_title("Solo Leveling (SUB ITA)")
         assert title == "Solo Leveling"
         assert dub_type == "sub"
 
@@ -146,8 +146,8 @@ class TestSourceDetectorAnime:
 
     def test_heuristic_detection(self) -> None:
         assert SourceDetector.detect_by_heuristic("https://animeserver.com") == "anime"
-        assert SourceDetector.detect_by_heuristic("https://streamingcommunity.buzz") == "reactive"
-        assert SourceDetector.detect_by_heuristic("https://cb01.movie") == "crawler"
+        assert SourceDetector.detect_by_heuristic("https://reactive-community.org") == "reactive"
+        assert SourceDetector.detect_by_heuristic("https://film-streaming-crawler.org") == "crawler"
 
     @pytest.mark.asyncio
     async def test_explicit_detection(self) -> None:

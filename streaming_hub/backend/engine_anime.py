@@ -337,6 +337,8 @@ class AnimeStreamClient:
         """Fetch all episodes for an anime series via chunked info API."""
         clean_id = str(anime_id).replace("anime-", "").split("-")[0]
         season = TvSeason(number=season_number, episodes=[])
+        if season_number > 1:
+            return season
 
         # Step 1: Probe first range to get total count if unknown
         probe_url = f"{self.base_url}/info_api/{clean_id}/1?start_range=1&end_range=120"
@@ -415,7 +417,7 @@ class AnimeStreamClient:
             url = f"{self.base_url}/embed-url/{episode_id_or_url}"
 
         text = await self._request(url)
-        clean_text = text.strip().strip('"\'')
+        clean_text = text.strip().strip("\"'")
         if clean_text.startswith("http"):
             return clean_text
         raise ValueError(f"Invalid embed URL returned: {text[:100]}")

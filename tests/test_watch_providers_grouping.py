@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
-from unittest.mock import AsyncMock, patch
-
 import pytest
+
 from streaming_hub.backend.main import (
     BatchAvailabilityItem,
     BatchAvailabilityRequest,
@@ -13,9 +11,7 @@ from streaming_hub.backend.main import (
     extract_streaming_availability,
     get_batch_streaming_availability,
     get_canonical_provider_group,
-    metadata_enricher,
 )
-from streaming_hub.backend.models import Movie
 
 
 class TestWatchProvidersGrouping:
@@ -144,11 +140,7 @@ class TestWatchProvidersGrouping:
 
         # Pre-seed cached item in SQLite
         cached_wp = {
-            "IT": {
-                "flatrate": [
-                    {"provider_name": "Netflix", "logo_path": "/netflix.jpg", "display_priority": 1}
-                ]
-            }
+            "IT": {"flatrate": [{"provider_name": "Netflix", "logo_path": "/netflix.jpg", "display_priority": 1}]}
         }
         await db.update_title_watch_providers(
             test_id_cached,

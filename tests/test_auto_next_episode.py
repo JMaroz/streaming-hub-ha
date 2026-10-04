@@ -66,3 +66,21 @@ class TestAutoNextEpisode:
         """Test that the final episode returns None when no further episodes exist."""
         res = asyncio.run(self.db.get_next_episode("series_test", 2, 1))
         assert res is None
+
+    def test_end_of_series_with_known_seasons_returns_none(self) -> None:
+        """Test that end of series returns None when titles table has known seasons."""
+        # Update titles table with known seasons [1, 2]
+        title_dict = {
+            "id": "series_test",
+            "media_type": "tv",
+            "title": "Stranger Things",
+            "seasons": [{"number": 1}, {"number": 2}],
+        }
+        with self.db._get_connection() as conn:
+            conn.execute(
+                "UPDATE titles SET raw_json = ? WHERE id = ?",
+                (json.dumps(title_dict), "series_test"),
+            )
+
+        res = asyncio.run(self.db.get_next_episode("series_test", 2, 1))
+        assert res is None

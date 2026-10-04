@@ -178,7 +178,7 @@ class SourceManager:
             if not src.is_enabled:
                 continue
             if item_id.startswith(f"{source_id}-") or (
-                source_id in ("reactive", "streamingcommunity") and item_id.startswith("sc-")
+                source_id in ("reactive", "engine_alpha") and item_id.startswith("sc-")
             ):
                 return await src.get_details(media_type, item_id)
 
@@ -197,7 +197,7 @@ class SourceManager:
             if not src.is_enabled:
                 continue
             if series_id.startswith(f"{source_id}-") or (
-                source_id in ("reactive", "streamingcommunity") and series_id.startswith("sc-")
+                source_id in ("reactive", "engine_alpha") and series_id.startswith("sc-")
             ):
                 return await src.get_season(series_id, season_number)
 

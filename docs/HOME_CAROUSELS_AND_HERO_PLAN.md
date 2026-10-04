@@ -2,13 +2,13 @@
 
 ## 1. Overview & Objectives
 
-StreamingHub's catalog on the Home view ("Tutti") historically fetched `/it/movies` and `/it/tv-shows` from the reactive streaming source (StreamingCommunity), re-sorted the titles by `(year, rating)`, and interleaved them into a unified flat grid (`[Movie 1, TV Series 1, Movie 2, ...]`). Furthermore, the Hero Banner simply selected the first index of this sorted list (`catalogItems[0]`).
+StreamingHub's catalog on the Home view ("Tutti") historically fetched `/it/movies` and `/it/tv-shows` from the reactive streaming source, re-sorted the titles by `(year, rating)`, and interleaved them into a unified flat grid (`[Movie 1, TV Series 1, Movie 2, ...]`). Furthermore, the Hero Banner simply selected the first index of this sorted list (`catalogItems[0]`).
 
 This document describes the implementation of:
-1. **Thematic and Editorial Carousels for Home ("Tutti")**: Mirroring the layout of StreamingCommunity's actual homepage (e.g., "Di Tendenza", "Nuove Uscite", "Top 10", "Film del Momento", "Serie del Momento") using horizontal scrolling shelves with the exact title sequence provided by the source.
+1. **Thematic and Editorial Carousels for Home ("Tutti")**: Mirroring the layout of the reactive source's actual homepage (e.g., "Di Tendenza", "Nuove Uscite", "Top 10", "Film del Momento", "Serie del Momento") using horizontal scrolling shelves with the exact title sequence provided by the source.
 2. **Conditional Source Behavior**:
-   - When StreamingCommunity (`ReactiveSource`) is active: render the editorial carousels on the Home tab.
-   - When only CB01 (`CrawlerSource`) is active: keep the existing merged grid mode, as CB01 does not expose editorial carousels.
+   - When `ReactiveSource` is active: render the editorial carousels on the Home tab.
+   - When only `CrawlerSource` is active: keep the existing merged grid mode, as `CrawlerSource` does not expose editorial carousels.
    - If no carousels are returned or errors occur: gracefully fall back to the existing interleaved grid layout.
 3. **Dedicated Views for Categories**: Retain the standard paginated grid for the "Film" and "Serie TV" tabs, genre views, and search queries.
 4. **Parental Control Enforcement**:
@@ -31,14 +31,14 @@ flowchart TD
         UI[Open Home / Tutti] --> FetchHome["GET /api/catalog/home?profile_id=...&source=..."]
         FetchHome --> HasCarousels{Carousels Available?}
         HasCarousels -- Yes --> RenderCarousels[Render Horizontal Carousels + Hero Banner]
-        HasCarousels -- No / CB01 Only --> RenderGrid[Render Traditional Interleaved Grid]
+        HasCarousels -- No / Crawler Only --> RenderGrid[Render Traditional Interleaved Grid]
     end
 
     subgraph Backend["Backend (FastAPI & Source Manager)"]
         FetchHome --> API["/api/catalog/home Handler"]
         API --> CheckSources{Active Sources}
-        CheckSources -- "StreamingCommunity Enabled" --> SC["ReactiveSource.get_carousels()"]
-        CheckSources -- "Only CB01 / Crawler" --> FallbackGrid["Empty Carousels -> Grid Mode"]
+        CheckSources -- "Reactive Source Enabled" --> SC["ReactiveSource.get_carousels()"]
+        CheckSources -- "Only Crawler / Other" --> FallbackGrid["Empty Carousels -> Grid Mode"]
         
         SC --> FetchProps["GET {base_url}it (Inertia Props)"]
         FetchProps --> ParseSliders["Parse props.sliders + props.billboard"]
@@ -77,7 +77,7 @@ flowchart TD
   - Implement `get_home_carousels(self, source_filter: str = "all") -> tuple[Movie | TvSeries | None, list[dict[str, Any]]]`.
   - Determines if a source with `has_carousels == True` is active.
   - If yes, fetches carousels from that source.
-  - If only crawler/CB01 sources are active, returns `(None, [])`.
+  - If only crawler sources are active, returns `(None, [])`.
 
 ### 3.4 Backend: `streaming_hub/backend/main.py`
 - Implement `GET /api/catalog/home`:
@@ -103,6 +103,6 @@ flowchart TD
   - Test Inertia homepage parser with mock sliders and billboard.
   - Test order preservation of titles.
   - Test Parental Control filtering and empty carousel pruning.
-  - Test single-source CB01 fallback to grid mode.
+  - Test single-source crawler fallback to grid mode.
   - Test Hero Banner selection and child profile safety.
 - Verify full test suite passes without regressions.

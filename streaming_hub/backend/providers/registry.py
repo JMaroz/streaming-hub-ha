@@ -48,7 +48,7 @@ class ProviderRegistry:
             pref_score = 0
             if preferred != "automatic" and s.provider_id == preferred:
                 pref_score = 2
-            elif s.provider_id in ("reactive", "streamingcommunity"):
+            elif s.provider_id in ("reactive", "engine_alpha"):
                 pref_score = 1
 
             quality_order = {"4k": 4, "fhd": 3, "hd": 2, "sd": 1}

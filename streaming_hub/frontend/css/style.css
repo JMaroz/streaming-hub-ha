@@ -1268,6 +1268,22 @@ body {
   flex-direction: column;
 }
 
+.player-overlay:fullscreen,
+.player-overlay:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+}
+
+.player-overlay:fullscreen .video-container,
+.player-overlay:-webkit-full-screen .video-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
 .player-header {
   position: absolute;
   top: 0;
@@ -2703,9 +2719,10 @@ body.cast-active {
 /* Next Episode Binge-Watching Overlay */
 .next-episode-overlay {
   position: absolute;
-  bottom: 60px;
-  right: 28px;
-  z-index: 999;
+  bottom: 80px;
+  right: 32px;
+  z-index: 2147483647;
+  pointer-events: auto;
   animation: slideInRight 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 }
 

@@ -163,6 +163,7 @@
     btnNextEpCancel: document.getElementById("btn-next-ep-cancel"),
     nextEpCountdown: document.getElementById("next-ep-countdown"),
     playerTitle: document.getElementById("player-title"),
+    videoContainer: document.querySelector(".video-container"),
     videoElement: document.getElementById("video-element"),
     playerSpinner: document.getElementById("player-spinner"),
     toastContainer: document.getElementById("toast-container"),
@@ -366,8 +367,28 @@
       elements.playerFullscreenBtn.addEventListener("click", toggleFullscreen);
     }
     if (elements.videoElement) {
-      elements.videoElement.addEventListener("dblclick", toggleFullscreen);
+      elements.videoElement.addEventListener("dblclick", (e) => {
+        e.preventDefault();
+        toggleFullscreen();
+      });
     }
+    if (elements.videoContainer) {
+      elements.videoContainer.addEventListener("dblclick", (e) => {
+        if (e.target.closest("button") || e.target.closest(".next-episode-overlay")) return;
+        toggleFullscreen();
+      });
+    }
+
+    const syncFullscreenState = () => {
+      const fullEl = document.fullscreenElement || document.webkitFullscreenElement;
+      if (fullEl === elements.videoElement && elements.playerModal) {
+        if (elements.playerModal.requestFullscreen) {
+          elements.playerModal.requestFullscreen().catch(() => {});
+        }
+      }
+    };
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    document.addEventListener("webkitfullscreenchange", syncFullscreenState);
 
     // Subtitles Toggle Button
     if (elements.playerSubtitlesBtn) {
@@ -1471,7 +1492,7 @@
       catalogsList = [...new Set(item.sources.map((s) => s.provider_id || s.provider_name))];
     } else if (item.source_a_url || (item.id && item.id.startsWith("sc-"))) {
       catalogsList = ["reactive"];
-    } else if (item.source_b_url || (item.id && item.id.startsWith("cb-"))) {
+    } else if (item.source_b_url || (item.id && item.id.startsWith("crawler-"))) {
       catalogsList = ["crawler"];
     } else if (item.id && item.id.startsWith("anime-")) {
       catalogsList = ["anime"];
@@ -2784,8 +2805,12 @@
     video.onended = () => {
       reportWatchProgress(true);
       if (nextEpState.ready && !nextEpState.cancelled) {
-        console.log("[StreamingHub] Video reached end: transitioning to next episode");
-        playPendingNextEpisode();
+        if (!nextEpState.triggered) {
+          console.log("[StreamingHub] Video reached end: triggering countdown for next episode");
+          triggerNextEpisodeCountdown();
+        }
+      } else {
+        console.log("[StreamingHub] Video reached end: no further episodes available");
       }
     };
     video.ondurationchange = () => {
@@ -3034,8 +3059,13 @@
           const ep = nextData.next.episode || {};
           console.log(`[StreamingHub] Next episode ready: S${nextData.next.season_number}:E${nextData.next.episode_number} - "${ep.title || 'Prossimo Episodio'}"`);
         } else {
+          nextEpState.data = null;
+          nextEpState.ready = false;
           console.log(`[StreamingHub] No next episode in catalog or end of series.`);
         }
+      } else {
+        nextEpState.data = null;
+        nextEpState.ready = false;
       }
 
       if (skipResp && skipResp.ok) {
@@ -3054,16 +3084,19 @@
 
   function calculateOutroTriggerTime(durTime) {
     if (segmentsState.outro && typeof segmentsState.outro.start === "number" && segmentsState.outro.start > 0) {
-      return segmentsState.outro.start;
+      if (segmentsState.outro.start >= durTime * 0.70 && segmentsState.outro.start < durTime - 5) {
+        return segmentsState.outro.start;
+      }
     }
     if (segmentsState.chapterOutroTime && segmentsState.chapterOutroTime > 0) {
-      return segmentsState.chapterOutroTime;
+      if (segmentsState.chapterOutroTime >= durTime * 0.70 && segmentsState.chapterOutroTime < durTime - 5) {
+        return segmentsState.chapterOutroTime;
+      }
     }
-    if (segmentsState.subtitleLastCueTime && durTime > 120 && segmentsState.subtitleLastCueTime > durTime * 0.80) {
-      return Math.min(durTime - 15, segmentsState.subtitleLastCueTime + 5);
-    }
+    // Subtitles should not be used as an outro trigger: dialogue often concludes minutes before credits.
+    // Fallback: Trigger strictly during the final credits in the last 30-35 seconds of the video.
     if (durTime > 60) {
-      return Math.min(durTime * 0.92, Math.max(durTime - 120, durTime * 0.85));
+      return Math.max(durTime - 35, durTime * 0.98);
     }
     return durTime;
   }
@@ -3120,6 +3153,13 @@
     }
     if (elements.nextEpisodeOverlay) {
       elements.nextEpisodeOverlay.classList.remove("hidden");
+    }
+
+    const fullEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fullEl === elements.videoElement && elements.playerModal) {
+      if (elements.playerModal.requestFullscreen) {
+        elements.playerModal.requestFullscreen().catch(() => {});
+      }
     }
 
     nextEpState.countdown = 10;
@@ -3221,7 +3261,14 @@
           castNextEpState.data = nextData.next;
           castNextEpState.ready = true;
           console.log(`[StreamingHub Cast] Next episode ready: S${nextData.next.season_number}:E${nextData.next.episode_number}`);
+        } else {
+          castNextEpState.data = null;
+          castNextEpState.ready = false;
+          console.log(`[StreamingHub Cast] No next episode available.`);
         }
+      } else {
+        castNextEpState.data = null;
+        castNextEpState.ready = false;
       }
 
       if (skipResp && skipResp.ok) {
@@ -3241,9 +3288,12 @@
     if (!castNextEpState.ready || castNextEpState.triggered || castNextEpState.cancelled) return;
     if (durSec <= 30) return;
 
-    const outroTriggerTime = castNextEpState.outroStart
-      ? castNextEpState.outroStart
-      : Math.min(durSec * 0.92, Math.max(durSec - 120, durSec * 0.85));
+    let outroTriggerTime;
+    if (castNextEpState.outroStart && castNextEpState.outroStart >= durSec * 0.70 && castNextEpState.outroStart < durSec - 5) {
+      outroTriggerTime = castNextEpState.outroStart;
+    } else {
+      outroTriggerTime = Math.max(durSec - 35, durSec * 0.98);
+    }
 
     if (curSec >= outroTriggerTime) {
       console.log(`[StreamingHub Cast] Triggering countdown at ${curSec}s (outro: ${outroTriggerTime}s)`);
@@ -3350,15 +3400,16 @@
   function toggleFullscreen() {
     const isFull = !!(document.fullscreenElement || document.webkitFullscreenElement);
     if (!isFull) {
-      const container = elements.playerModal || elements.videoElement;
-      if (container.requestFullscreen) {
+      const container = elements.playerModal || elements.videoContainer || elements.videoElement;
+      if (container && container.requestFullscreen) {
         container.requestFullscreen().catch(() => {
-          if (elements.videoElement.requestFullscreen) elements.videoElement.requestFullscreen();
-          else if (elements.videoElement.webkitRequestFullscreen) elements.videoElement.webkitRequestFullscreen();
+          if (elements.videoElement && elements.videoElement.webkitEnterFullscreen) {
+            elements.videoElement.webkitEnterFullscreen();
+          }
         });
-      } else if (container.webkitRequestFullscreen) {
+      } else if (container && container.webkitRequestFullscreen) {
         container.webkitRequestFullscreen();
-      } else if (elements.videoElement.webkitEnterFullscreen) {
+      } else if (elements.videoElement && elements.videoElement.webkitEnterFullscreen) {
         elements.videoElement.webkitEnterFullscreen();
       }
     } else {

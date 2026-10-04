@@ -98,11 +98,11 @@ def load_options() -> dict[str, Any]:
             )
 
     # Backward compatibility with single URL env vars if explicitly set by user
-    sc_env = os.getenv("SOURCE_ALPHA_BASE_URL", "").strip() or os.getenv("STREAMINGCOMMUNITY_BASE_URL", "").strip()
+    sc_env = os.getenv("SOURCE_ALPHA_BASE_URL", "").strip() or os.getenv("SOURCE_A_BASE_URL", "").strip()
     if sc_env and not any(s["url"] == sc_env for s in normalized_sources):
         normalized_sources.append({"url": sc_env, "type": "reactive", "name": "Sorgente Reattiva", "enabled": True})
 
-    cb_env = os.getenv("SOURCE_BETA_BASE_URL", "").strip() or os.getenv("CB01_BASE_URL", "").strip()
+    cb_env = os.getenv("SOURCE_BETA_BASE_URL", "").strip() or os.getenv("SOURCE_B_BASE_URL", "").strip()
     if cb_env and not any(s["url"] == cb_env for s in normalized_sources):
         normalized_sources.append({"url": cb_env, "type": "crawler", "name": "Sorgente Web", "enabled": True})
 
@@ -186,7 +186,7 @@ async def init_sources(sources_list: list[dict[str, Any]], custom_dns: str) -> N
             detected_type = await SourceDetector.detect(url, user_specified_type=user_type, session=session)
             _LOGGER.info("Configuring source #%d: %s -> detected type: %s", idx + 1, url, detected_type)
 
-            if detected_type in ("reactive", "streamingcommunity"):
+            if detected_type in ("reactive", "engine_alpha", "spa"):
                 source_manager.register_source(
                     ReactiveSource(
                         base_url=url,
@@ -195,7 +195,7 @@ async def init_sources(sources_list: list[dict[str, Any]], custom_dns: str) -> N
                         name=custom_name or "Sorgente Reattiva",
                     )
                 )
-            elif detected_type in ("crawler", "cb01"):
+            elif detected_type in ("crawler", "engine_beta", "html"):
                 source_manager.register_source(
                     CrawlerSource(
                         base_url=url,
@@ -527,7 +527,7 @@ def get_canonical_provider_group(provider_name: str) -> tuple[str, str]:
 
 def extract_streaming_availability(item_dict_or_obj: Any, country_code: str) -> dict[str, Any]:
     """Format country-specific watch providers from TMDb results with canonical provider grouping.
-    
+
     Zero Extra Cost Rule:
     grouped_logos and grouped_providers MUST ONLY include subscription and free streaming (flatrate, free, ads).
     Rent and buy are strictly excluded from grouped_logos to prevent misleading users into thinking paid titles are included.
@@ -608,9 +608,7 @@ def extract_streaming_availability(item_dict_or_obj: Any, country_code: str) -> 
                 }
             # Add badge if not already added for this group
             if not any(b["key"] == type_key for b in grouped_map[gid]["badges"]):
-                grouped_map[gid]["badges"].append(
-                    {"key": type_key, "label": label, "badgeClass": badge_class}
-                )
+                grouped_map[gid]["badges"].append({"key": type_key, "label": label, "badgeClass": badge_class})
 
     grouped_logos = grouped_logos[:4]
     grouped_providers = list(grouped_map.values())
@@ -684,7 +682,7 @@ async def test_source_url(req: TestSourceRequest) -> dict[str, Any]:
         "url": clean_url,
         "specified_type": req.type,
         "detected_type": detected,
-        "supported": detected in ("reactive", "crawler", "anime", "streamingcommunity", "cb01"),
+        "supported": detected in ("reactive", "crawler", "anime"),
     }
 
 
@@ -1289,17 +1287,20 @@ async def get_season_episodes(
 
     try:
         season = await source_manager.get_season(series_id, season_number)
-        if season and season.episodes:
-            # Enrich season episodes with TMDb if tmdb_id is available
-            title_data = await db.get_title(series_id)
-            tmdb_id = title_data.get("tmdb_id") if title_data else None
-            if tmdb_id:
-                await metadata_enricher.enrich_tv_season(tmdb_id, season)
-            await db.save_season(series_id, season)
+        if not season or not season.episodes or season.number != season_number:
+            raise HTTPException(status_code=404, detail=f"Stagione {season_number} non trovata")
+        # Enrich season episodes with TMDb if tmdb_id is available
+        title_data = await db.get_title(series_id)
+        tmdb_id = title_data.get("tmdb_id") if title_data else None
+        if tmdb_id:
+            await metadata_enricher.enrich_tv_season(tmdb_id, season)
+        await db.save_season(series_id, season)
         res = season.to_dict()
         res["age_seconds"] = 0
         res["updated_at"] = datetime.now(UTC).isoformat()
         return res
+    except HTTPException:
+        raise
     except Exception as err:
         _LOGGER.error("Error fetching season %s for %s: %s", season_number, series_id, err)
         if cached_rec:
@@ -1610,7 +1611,7 @@ async def get_next_episode_endpoint(
     if not next_ep:
         try:
             curr_season = await source_manager.get_season(series_id, season_number)
-            if curr_season and curr_season.episodes:
+            if curr_season and curr_season.episodes and curr_season.number == season_number:
                 title_data = await db.get_title(series_id)
                 tmdb_id = title_data.get("tmdb_id") if title_data else None
                 if tmdb_id:
@@ -1623,14 +1624,25 @@ async def get_next_episode_endpoint(
     # 2. Fallback: if still not found and this might be the end of season, fetch season_number + 1
     if not next_ep:
         try:
-            next_season = await source_manager.get_season(series_id, season_number + 1)
-            if next_season and next_season.episodes:
-                title_data = await db.get_title(series_id)
-                tmdb_id = title_data.get("tmdb_id") if title_data else None
-                if tmdb_id:
-                    await metadata_enricher.enrich_tv_season(tmdb_id, next_season)
-                await db.save_season(series_id, next_season)
-                next_ep = await db.get_next_episode(series_id, season_number, episode_number)
+            target_next_season = season_number + 1
+            title_data = await db.get_title(series_id)
+            known_seasons: set[int] = set()
+            if title_data and title_data.get("seasons"):
+                known_seasons = {
+                    int(s.get("number", s.get("season_number", 0)))
+                    for s in title_data["seasons"]
+                    if isinstance(s, dict) and (s.get("number") is not None or s.get("season_number") is not None)
+                }
+
+            # Only attempt fetching next season if known_seasons is not populated or target_next_season is known
+            if not known_seasons or target_next_season in known_seasons:
+                next_season = await source_manager.get_season(series_id, target_next_season)
+                if next_season and next_season.episodes and next_season.number == target_next_season:
+                    tmdb_id = title_data.get("tmdb_id") if title_data else None
+                    if tmdb_id:
+                        await metadata_enricher.enrich_tv_season(tmdb_id, next_season)
+                    await db.save_season(series_id, next_season)
+                    next_ep = await db.get_next_episode(series_id, season_number, episode_number)
         except Exception as err:
             _LOGGER.debug("Could not fallback fetch next season %s: %s", season_number + 1, err)
 
@@ -1641,7 +1653,7 @@ async def get_next_episode_endpoint(
             target_season_num = next_ep["season_number"]
             try:
                 target_season = await source_manager.get_season(series_id, target_season_num)
-                if target_season and target_season.episodes:
+                if target_season and target_season.episodes and target_season.number == target_season_num:
                     await db.save_season(series_id, target_season)
                     refreshed = await db.get_next_episode(series_id, season_number, episode_number)
                     if refreshed:

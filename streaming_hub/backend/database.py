@@ -133,20 +133,6 @@ class MediaDatabase:
                 pass
 
             try:
-                conn.execute(
-                    "UPDATE titles SET source_a_url = streamingcommunity_url WHERE source_a_url IS NULL AND streamingcommunity_url IS NOT NULL;"
-                )
-            except Exception:
-                pass
-
-            try:
-                conn.execute(
-                    "UPDATE titles SET source_b_url = cb01_url WHERE source_b_url IS NULL AND cb01_url IS NOT NULL;"
-                )
-            except Exception:
-                pass
-
-            try:
                 conn.execute("ALTER TABLE titles ADD COLUMN certification TEXT;")
             except Exception:
                 pass
@@ -259,8 +245,8 @@ class MediaDatabase:
                     is_adult_val,
                     cast_json,
                     item.director,
-                    getattr(item, "source_a_url", None) or getattr(item, "streamingcommunity_url", None),
-                    getattr(item, "source_b_url", None) or getattr(item, "cb01_url", None),
+                    getattr(item, "source_a_url", None) or "",
+                    getattr(item, "source_b_url", None) or "",
                     item.tmdb_id,
                     item.imdb_id,
                     getattr(item, "trakt_id", None),
@@ -679,11 +665,27 @@ class MediaDatabase:
                         "episode": ep.to_dict(),
                     }
 
-        # 2. Look in the next season for episode 1 (or lowest episode number)
+        # 2. Check title's known seasons if title record exists to avoid false season jumps
+        title_data = self._get_title_sync(series_id)
+        if title_data and title_data.get("seasons"):
+            known_season_nums = {
+                int(s.get("number", s.get("season_number", 0)))
+                for s in title_data["seasons"]
+                if isinstance(s, dict) and (s.get("number") is not None or s.get("season_number") is not None)
+            }
+            if known_season_nums and (season_number + 1) not in known_season_nums:
+                return None
+
+        # 3. Look in the next season for episode 1 (or lowest episode number)
         next_season = self._get_season_sync(series_id, season_number + 1)
-        if next_season and next_season.episodes:
-            sorted_eps = sorted(next_season.episodes, key=lambda e: e.episode_number)
-            if sorted_eps:
+        if next_season and next_season.episodes and next_season.number == season_number + 1:
+            valid_eps = [
+                ep
+                for ep in next_season.episodes
+                if getattr(ep, "season_number", season_number + 1) == season_number + 1
+            ]
+            if valid_eps:
+                sorted_eps = sorted(valid_eps, key=lambda e: e.episode_number)
                 target_ep = sorted_eps[0]
                 return {
                     "series_id": series_id,

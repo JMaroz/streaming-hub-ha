@@ -27,9 +27,7 @@ class AnimeSource(BaseSource):
         self._base_url = (base_url or "").rstrip("/")
         self._name = name or "Sorgente Anime"
         self._client = (
-            AnimeStreamClient(base_url=self._base_url, custom_dns=custom_dns)
-            if enabled and self._base_url
-            else None
+            AnimeStreamClient(base_url=self._base_url, custom_dns=custom_dns) if enabled and self._base_url else None
         )
 
     @property

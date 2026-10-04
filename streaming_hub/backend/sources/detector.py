@@ -15,7 +15,7 @@ USER_AGENT = (
 
 # Internal heuristic keyword patterns
 _REACTIVE_KEYWORDS = ("community", "strcom", "sc-", "vix")
-_CRAWLER_KEYWORDS = ("cineblog", "cb01", "film-streaming")
+_CRAWLER_KEYWORDS = ("crawler", "film-streaming", "streaming-hd")
 _ANIME_KEYWORDS = ("anime", "anim")
 
 
@@ -135,9 +135,9 @@ class SourceDetector:
         # 1. Explicit user selection (including silent backward compatibility)
         if user_type in ("anime", "anime_engine", "engine_anime", "au"):
             return "anime"
-        if user_type in ("reactive", "spa", "engine_alpha", "type_a", "streamingcommunity", "sc"):
+        if user_type in ("reactive", "spa", "engine_alpha", "type_a", "source_alpha", "source_a"):
             return "reactive"
-        if user_type in ("crawler", "html", "engine_beta", "type_b", "cb01", "cineblog"):
+        if user_type in ("crawler", "html", "engine_beta", "type_b", "source_beta", "source_b"):
             return "crawler"
 
         # 2. Fast domain heuristic

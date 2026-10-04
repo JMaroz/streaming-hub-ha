@@ -987,7 +987,21 @@ class ReactiveStreamClient:
 
     def _parse_loaded_season(self, sc_id: str, season_num: int, loaded_season: dict[str, Any]) -> TvSeason:
         """Parse season and episodes from an Inertia loadedSeason dictionary."""
-        raw_episodes = loaded_season.get("episodes", []) if isinstance(loaded_season, dict) else []
+        if not isinstance(loaded_season, dict):
+            return TvSeason(number=season_num, episodes=[])
+
+        # Validate that loadedSeason actually belongs to the requested season_num
+        loaded_num = loaded_season.get("number")
+        if loaded_num is not None and int(loaded_num) != int(season_num):
+            _LOGGER.debug(
+                "loadedSeason number %s does not match requested season %s for %s",
+                loaded_num,
+                season_num,
+                sc_id,
+            )
+            return TvSeason(number=season_num, episodes=[])
+
+        raw_episodes = loaded_season.get("episodes", [])
         episodes: list[TvEpisode] = []
         for ep in raw_episodes:
             if not isinstance(ep, dict):
@@ -1136,8 +1150,33 @@ class ReactiveStreamClient:
 
         try:
             page_data = self.extract_data_page(html_text)
-            loaded_season = page_data.get("props", {}).get("loadedSeason")
+            props = page_data.get("props", {})
+            title_obj = props.get("title", {})
+            available_seasons = [
+                int(s["number"])
+                for s in title_obj.get("seasons", [])
+                if isinstance(s, dict) and s.get("number") is not None
+            ]
+            if available_seasons and int(season_num) not in available_seasons:
+                _LOGGER.debug(
+                    "Season %s not in available seasons %s for %s",
+                    season_num,
+                    available_seasons,
+                    clean_sc_id,
+                )
+                return TvSeason(number=season_num, episodes=[])
+
+            loaded_season = props.get("loadedSeason")
             if isinstance(loaded_season, dict):
+                loaded_num = loaded_season.get("number")
+                if loaded_num is not None and int(loaded_num) != int(season_num):
+                    _LOGGER.warning(
+                        "Server returned loadedSeason number %s but requested %s for %s (season does not exist)",
+                        loaded_num,
+                        season_num,
+                        clean_sc_id,
+                    )
+                    return TvSeason(number=season_num, episodes=[])
                 return self._parse_loaded_season(clean_sc_id, season_num, loaded_season)
         except Exception as err:
             _LOGGER.debug("Error parsing season %s: %s", season_num, err)
