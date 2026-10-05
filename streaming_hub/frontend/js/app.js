@@ -85,9 +85,6 @@
     favoritesSection: document.getElementById("favorites-section"),
     favoritesRow: document.getElementById("favorites-row"),
     favoritesCount: document.getElementById("favorites-count"),
-    watchedSection: document.getElementById("watched-section"),
-    watchedRow: document.getElementById("watched-row"),
-    watchedCount: document.getElementById("watched-count"),
 
     btnRestartTrigger: document.getElementById("btn-restart-trigger"),
     brandLogo: document.getElementById("brand-logo"),
@@ -844,10 +841,6 @@
     elements.catalogGrid.innerHTML = "";
     if (elements.continueRow) elements.continueRow.innerHTML = "";
     if (elements.favoritesRow) elements.favoritesRow.innerHTML = "";
-    if (elements.watchedRow) elements.watchedRow.innerHTML = "";
-    if (elements.continueSection) elements.continueSection.classList.add("hidden");
-    if (elements.favoritesSection) elements.favoritesSection.classList.add("hidden");
-    if (elements.watchedSection) elements.watchedSection.classList.add("hidden");
     if (elements.homeCarouselsSection) elements.homeCarouselsSection.classList.add("hidden");
     showLoading(true);
 
@@ -1047,7 +1040,6 @@
     if (!isHome) {
       if (elements.continueSection) elements.continueSection.classList.add("hidden");
       if (elements.favoritesSection) elements.favoritesSection.classList.add("hidden");
-      if (elements.watchedSection) elements.watchedSection.classList.add("hidden");
       if (elements.homeCarouselsSection) elements.homeCarouselsSection.classList.add("hidden");
     } else if (!append) {
       if (elements.continueSection && elements.continueRow && elements.continueRow.children.length > 0) {
@@ -1055,9 +1047,6 @@
       }
       if (elements.favoritesSection && elements.favoritesRow && elements.favoritesRow.children.length > 0) {
         elements.favoritesSection.classList.remove("hidden");
-      }
-      if (elements.watchedSection && elements.watchedRow && elements.watchedRow.children.length > 0) {
-        elements.watchedSection.classList.remove("hidden");
       }
     }
 
@@ -1217,7 +1206,6 @@
     elements.heroSection.classList.add("hidden");
     if (elements.continueSection) elements.continueSection.classList.add("hidden");
     if (elements.favoritesSection) elements.favoritesSection.classList.add("hidden");
-    if (elements.watchedSection) elements.watchedSection.classList.add("hidden");
     if (elements.homeCarouselsSection) elements.homeCarouselsSection.classList.add("hidden");
 
     elements.sectionTitle.textContent = `Risultati per "${query}"`;
@@ -1251,7 +1239,6 @@
       elements.heroSection.classList.add("hidden");
       if (elements.continueSection) elements.continueSection.classList.add("hidden");
       if (elements.favoritesSection) elements.favoritesSection.classList.add("hidden");
-      if (elements.watchedSection) elements.watchedSection.classList.add("hidden");
       if (elements.homeCarouselsSection) elements.homeCarouselsSection.classList.add("hidden");
     }
 
@@ -1485,57 +1472,6 @@
       }
     }
 
-    // Determine catalog badges
-    let catalogsList = [];
-    if (item.catalogs && item.catalogs.length > 0) {
-      catalogsList = item.catalogs;
-    } else if (item.sources && item.sources.length > 0) {
-      catalogsList = [...new Set(item.sources.map((s) => s.provider_id || s.provider_name))];
-    } else if (item.source_a_url || (item.id && item.id.startsWith("sc-"))) {
-      catalogsList = ["reactive"];
-    } else if (item.source_b_url || (item.id && item.id.startsWith("crawler-"))) {
-      catalogsList = ["crawler"];
-    } else if (item.id && item.id.startsWith("anime-")) {
-      catalogsList = ["anime"];
-    }
-
-    let catalogsHtml = "";
-    if (catalogsList.length > 0) {
-      catalogsHtml = `
-        <div class="card-catalogs">
-          ${catalogsList
-            .map((cat) => {
-              const lower = cat.toLowerCase();
-              let badgeClass = "catalog-badge";
-              let display = cat;
-
-              const matchedSource = (state.availableSources || []).find(
-                (s) => s.id.toLowerCase() === lower || (s.name && s.name.toLowerCase() === lower)
-              );
-
-              if (matchedSource && matchedSource.name) {
-                display = matchedSource.name;
-                badgeClass += ` badge-source-${matchedSource.id.toLowerCase()}`;
-              } else if (lower.includes("reactive")) {
-                badgeClass += " badge-source-reactive";
-                display = "Reattiva";
-              } else if (lower.includes("crawler")) {
-                badgeClass += " badge-source-crawler";
-                display = "Web";
-              } else if (lower.includes("anime")) {
-                badgeClass += " badge-source-anime";
-                display = "Anime";
-              } else {
-                badgeClass += " badge-source-generic";
-                display = cat;
-              }
-              return `<span class="${badgeClass}">${escapeHtml(display)}</span>`;
-            })
-            .join("")}
-        </div>
-      `;
-    }
-
     card.innerHTML = `
       <div class="card-poster-wrap">
         <img class="card-poster" src="${posterSrc}" alt="${escapeHtml(displayTitle)}" loading="lazy" onerror="this.onerror=null;this.src='${DEFAULT_POSTER_SVG}';">
@@ -1553,7 +1489,6 @@
           <span>${item.year || ""}</span>
           <span>${(item.genres && item.genres[0]) || ""}</span>
         </div>
-        ${catalogsHtml}
       </div>
     `;
 
@@ -1772,7 +1707,6 @@
   function refreshAllShelves() {
     loadContinueWatching();
     loadFavoritesShelf();
-    loadWatchedShelf();
   }
 
   // Favorites Shelf & Management
@@ -1835,71 +1769,6 @@
     elements.favoritesRow.appendChild(fragment);
   }
 
-  // Watched Shelf
-  async function loadWatchedShelf() {
-    if (!elements.watchedSection || !elements.watchedRow) return;
-    try {
-      const resp = await fetch(apiUrl(`api/history/watched?profile_id=${encodeURIComponent(state.activeProfileId)}&limit=15`));
-      if (!resp.ok) return;
-      const items = await resp.json();
-      renderWatchedShelf(items || []);
-    } catch (err) {
-      console.warn("Could not load watched shelf:", err);
-    }
-  }
-
-  function renderWatchedShelf(items) {
-    if (!elements.watchedSection || !elements.watchedRow) return;
-    elements.watchedRow.innerHTML = "";
-
-    if (!items || items.length === 0) {
-      elements.watchedSection.classList.add("hidden");
-      return;
-    }
-
-    if (state.activeType === "all" && !state.searchQuery && !state.activeGenre) {
-      elements.watchedSection.classList.remove("hidden");
-    }
-
-    if (elements.watchedCount) {
-      elements.watchedCount.textContent = `${items.length} completati`;
-    }
-
-    const fragment = document.createDocumentFragment();
-    items.forEach((item) => {
-      const card = document.createElement("div");
-      card.className = "media-card";
-
-      const posterSrc = getProxiedImageUrl(item.poster_url) || DEFAULT_POSTER_SVG;
-      const isTv = item.media_type === "tv";
-      const typeLabel = isTv ? "Serie TV" : "Film";
-      const displayTitle = getDisplayTitle(item);
-
-      card.innerHTML = `
-        <div class="card-poster-wrap">
-          <img class="card-poster" src="${posterSrc}" alt="${escapeHtml(displayTitle)}" loading="lazy" onerror="this.onerror=null;this.src='${DEFAULT_POSTER_SVG}';">
-          <div class="card-badges">
-            <span class="card-badge-type">${typeLabel}</span>
-            <span class="card-badge-rating">✓ Visto</span>
-          </div>
-        </div>
-        <div class="card-info">
-          <div class="card-title" title="${escapeHtml(displayTitle)}">${escapeHtml(displayTitle)}</div>
-        </div>
-      `;
-
-      card.addEventListener("click", () => {
-        openDetails({
-          id: item.media_id,
-          title: displayTitle,
-          type: item.media_type,
-          poster_url: item.poster_url,
-        });
-      });
-      fragment.appendChild(card);
-    });
-    elements.watchedRow.appendChild(fragment);
-  }
 
   // Toggle Favorite
   async function toggleFavoriteItem(item) {
@@ -3484,7 +3353,6 @@
     elements.videoElement.load();
     elements.playerModal.classList.add("hidden");
     loadContinueWatching();
-    loadWatchedShelf();
   }
 
   function closeModal() {
