@@ -189,6 +189,9 @@ class CatalogMerger:
     @classmethod
     def merge_movie(cls, existing: Movie, incoming: Movie) -> Movie:
         """Merge an incoming Movie record into an existing Movie record."""
+        if (not existing.title or existing.title.strip() in ("", "Senza Titolo")) and incoming.title and incoming.title.strip() not in ("", "Senza Titolo"):
+            existing.title = incoming.title
+
         all_catalogs = list(dict.fromkeys(existing.catalogs + incoming.catalogs))
         existing.catalogs = all_catalogs
 
@@ -226,6 +229,9 @@ class CatalogMerger:
     @classmethod
     def merge_tv_series(cls, existing: TvSeries, incoming: TvSeries) -> TvSeries:
         """Merge an incoming TvSeries record into an existing TvSeries record."""
+        if (not existing.title or existing.title.strip() in ("", "Senza Titolo")) and incoming.title and incoming.title.strip() not in ("", "Senza Titolo"):
+            existing.title = incoming.title
+
         all_catalogs = list(dict.fromkeys(existing.catalogs + incoming.catalogs))
         existing.catalogs = all_catalogs
 

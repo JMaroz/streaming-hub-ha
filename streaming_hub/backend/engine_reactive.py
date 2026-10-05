@@ -289,8 +289,15 @@ class ReactiveStreamClient:
     def _item_to_movie(self, item: dict[str, Any]) -> Movie:
         """Convert a ReactiveEngine search or title dict into a Movie object."""
         sc_id = str(item.get("id"))
-        slug = item.get("slug", "")
-        name = item.get("name", "")
+        slug = str(item.get("slug") or "")
+        name = (
+            item.get("name")
+            or item.get("title")
+            or item.get("original_title")
+            or item.get("original_name")
+            or (slug.replace("-", " ").title() if slug else "")
+            or "Senza Titolo"
+        )
         release_date = item.get("last_air_date") or item.get("release_date")
         year = None
         if release_date:
@@ -380,8 +387,15 @@ class ReactiveStreamClient:
     def _item_to_tv_series(self, item: dict[str, Any]) -> TvSeries:
         """Convert a ReactiveEngine search or title dict into a TvSeries object."""
         sc_id = str(item.get("id"))
-        slug = item.get("slug", "")
-        name = item.get("name", "")
+        slug = str(item.get("slug") or "")
+        name = (
+            item.get("name")
+            or item.get("title")
+            or item.get("original_name")
+            or item.get("original_title")
+            or (slug.replace("-", " ").title() if slug else "")
+            or "Senza Titolo"
+        )
         release_date = item.get("last_air_date") or item.get("release_date")
         year = None
         if release_date:
@@ -982,6 +996,9 @@ class ReactiveStreamClient:
 
         if not title_data or not isinstance(title_data, dict):
             raise ValueError(f"No title data found for movie {media_id}")
+
+        if slug and not title_data.get("slug"):
+            title_data["slug"] = slug
 
         return self._item_to_movie(title_data)
 

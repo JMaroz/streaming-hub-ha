@@ -162,7 +162,13 @@ class MetadataEnricher:
             metadata = await self._fetch_tmdb_movie(movie, key_to_use)
 
         if not metadata and not movie.imdb_id:
-            movie.imdb_id = await self._search_cinemeta_imdb_id("movie", movie.title)
+            search_title = movie.title
+            if (not search_title or search_title.strip() == "Senza Titolo") and movie.id:
+                clean_id = movie.id.replace("sc-", "")
+                if "-" in clean_id:
+                    search_title = clean_id.split("-", 1)[1].replace("-", " ")
+            if search_title and search_title.strip() != "Senza Titolo":
+                movie.imdb_id = await self._search_cinemeta_imdb_id("movie", search_title)
 
         if not metadata and movie.imdb_id:
             metadata = await self._fetch_cinemeta("movie", movie.imdb_id)
@@ -189,13 +195,25 @@ class MetadataEnricher:
             metadata = await self._fetch_tmdb_tv(series, key_to_use)
 
         if not metadata and not series.imdb_id:
-            series.imdb_id = await self._search_cinemeta_imdb_id("series", series.title)
+            search_title = series.title
+            if (not search_title or search_title.strip() == "Senza Titolo") and series.id:
+                clean_id = series.id.replace("sc-", "")
+                if "-" in clean_id:
+                    search_title = clean_id.split("-", 1)[1].replace("-", " ")
+            if search_title and search_title.strip() != "Senza Titolo":
+                series.imdb_id = await self._search_cinemeta_imdb_id("series", search_title)
 
         if not metadata and series.imdb_id:
             metadata = await self._fetch_cinemeta("series", series.imdb_id)
 
         if not metadata:
-            metadata = await self._fetch_tvmaze(series.title)
+            search_title = series.title
+            if (not search_title or search_title.strip() == "Senza Titolo") and series.id:
+                clean_id = series.id.replace("sc-", "")
+                if "-" in clean_id:
+                    search_title = clean_id.split("-", 1)[1].replace("-", " ")
+            if search_title and search_title.strip() != "Senza Titolo":
+                metadata = await self._fetch_tvmaze(search_title)
 
         if metadata:
             self._cache[cache_key] = metadata
@@ -209,14 +227,20 @@ class MetadataEnricher:
         try:
             tmdb_id = movie.tmdb_id
             if not tmdb_id:
-                clean_title = self._clean_title(movie.title)
-                search_url = f"{TMDB_BASE_URL}/search/movie"
-                params: dict[str, Any] = {"query": clean_title, "language": "it-IT", **auth_params}
-                if movie.year:
-                    params["year"] = str(movie.year)
-                data = await self._get_json(search_url, params=params, headers=auth_headers)
-                if data and data.get("results"):
-                    tmdb_id = data["results"][0].get("id")
+                clean_title = self._clean_title(movie.title) if movie.title and movie.title.strip() != "Senza Titolo" else ""
+                if not clean_title and movie.id:
+                    clean_id = movie.id.replace("sc-", "")
+                    if "-" in clean_id:
+                        slug_part = clean_id.split("-", 1)[1]
+                        clean_title = self._clean_title(slug_part.replace("-", " "))
+                if clean_title:
+                    search_url = f"{TMDB_BASE_URL}/search/movie"
+                    params: dict[str, Any] = {"query": clean_title, "language": "it-IT", **auth_params}
+                    if movie.year:
+                        params["year"] = str(movie.year)
+                    data = await self._get_json(search_url, params=params, headers=auth_headers)
+                    if data and data.get("results"):
+                        tmdb_id = data["results"][0].get("id")
 
             if not tmdb_id:
                 return None
@@ -234,14 +258,20 @@ class MetadataEnricher:
         try:
             tmdb_id = series.tmdb_id
             if not tmdb_id:
-                clean_title = self._clean_title(series.title)
-                search_url = f"{TMDB_BASE_URL}/search/tv"
-                params: dict[str, Any] = {"query": clean_title, "language": "it-IT", **auth_params}
-                if series.year:
-                    params["first_air_date_year"] = str(series.year)
-                data = await self._get_json(search_url, params=params, headers=auth_headers)
-                if data and data.get("results"):
-                    tmdb_id = data["results"][0].get("id")
+                clean_title = self._clean_title(series.title) if series.title and series.title.strip() != "Senza Titolo" else ""
+                if not clean_title and series.id:
+                    clean_id = series.id.replace("sc-", "")
+                    if "-" in clean_id:
+                        slug_part = clean_id.split("-", 1)[1]
+                        clean_title = self._clean_title(slug_part.replace("-", " "))
+                if clean_title:
+                    search_url = f"{TMDB_BASE_URL}/search/tv"
+                    params: dict[str, Any] = {"query": clean_title, "language": "it-IT", **auth_params}
+                    if series.year:
+                        params["first_air_date_year"] = str(series.year)
+                    data = await self._get_json(search_url, params=params, headers=auth_headers)
+                    if data and data.get("results"):
+                        tmdb_id = data["results"][0].get("id")
 
             if not tmdb_id:
                 return None
@@ -290,6 +320,17 @@ class MetadataEnricher:
 
     def _apply_movie_metadata(self, movie: Movie, meta: dict[str, Any]) -> None:
         """Apply enriched metadata to Movie object."""
+        # Ensure title is populated if missing or placeholder
+        if not movie.title or movie.title.strip() in ("", "Senza Titolo"):
+            resolved_title = (
+                meta.get("title")
+                or meta.get("name")
+                or meta.get("original_title")
+                or meta.get("original_name")
+            )
+            if resolved_title:
+                movie.title = str(resolved_title)
+
         if meta.get("id"):
             with contextlib.suppress(Exception):
                 movie.tmdb_id = int(meta["id"])
@@ -394,6 +435,17 @@ class MetadataEnricher:
 
     def _apply_tv_metadata(self, series: TvSeries, meta: dict[str, Any]) -> None:
         """Apply enriched metadata to TvSeries object."""
+        # Ensure title is populated if missing or placeholder
+        if not series.title or series.title.strip() in ("", "Senza Titolo"):
+            resolved_title = (
+                meta.get("name")
+                or meta.get("title")
+                or meta.get("original_name")
+                or meta.get("original_title")
+            )
+            if resolved_title:
+                series.title = str(resolved_title)
+
         if meta.get("id"):
             with contextlib.suppress(Exception):
                 series.tmdb_id = int(meta["id"])

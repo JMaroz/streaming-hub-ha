@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
 
-from .database import MediaDatabase
+from .database import MediaDatabase, slug_to_title
 from .dns_resolver import DNS_DEFAULT
 from .ha_client import HACoreClient
 from .metadata import MetadataEnricher
@@ -1225,8 +1225,16 @@ async def get_batch_streaming_availability(req: BatchAvailabilityRequest) -> dic
         async def _enrich_item(it: BatchAvailabilityItem) -> None:
             async with sem:
                 try:
+                    resolved_title = it.title
+                    if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
+                        cached_t = await db.get_title(it.id)
+                        if cached_t and cached_t.get("title") and cached_t["title"] != "Senza Titolo":
+                            resolved_title = cached_t["title"]
+                        else:
+                            resolved_title = slug_to_title(it.id) or "Senza Titolo"
+
                     if it.media_type == "tv":
-                        series = TvSeries(id=it.id, title=it.title, year=it.year)
+                        series = TvSeries(id=it.id, title=resolved_title, year=it.year)
                         await metadata_enricher.enrich_tv_series(series, api_key=tmdb_key)
                         if series.watch_providers:
                             cached_wp[it.id] = series.watch_providers
@@ -1234,14 +1242,14 @@ async def get_batch_streaming_availability(req: BatchAvailabilityRequest) -> dic
                                 it.id,
                                 series.watch_providers,
                                 media_type="tv",
-                                title=it.title,
+                                title=series.title or resolved_title,
                                 year=it.year,
                                 tmdb_id=series.tmdb_id,
                                 rating=series.rating,
                                 certification=series.certification,
                             )
                     else:
-                        movie = Movie(id=it.id, title=it.title, year=it.year)
+                        movie = Movie(id=it.id, title=resolved_title, year=it.year)
                         await metadata_enricher.enrich_movie(movie, api_key=tmdb_key)
                         if movie.watch_providers:
                             cached_wp[it.id] = movie.watch_providers
@@ -1249,7 +1257,7 @@ async def get_batch_streaming_availability(req: BatchAvailabilityRequest) -> dic
                                 it.id,
                                 movie.watch_providers,
                                 media_type="movie",
-                                title=it.title,
+                                title=movie.title or resolved_title,
                                 year=it.year,
                                 tmdb_id=movie.tmdb_id,
                                 rating=movie.rating,
@@ -1315,11 +1323,27 @@ async def get_season_episodes(
 @app.post("/api/history")
 async def save_progress(req: ProgressRequest) -> dict[str, Any]:
     """Save or update video watch progress in SQLite database scoped by profile."""
+    resolved_title = req.title
+    resolved_poster = req.poster_url
+    if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo") or not resolved_poster:
+        if req.media_id:
+            try:
+                cached_title = await db.get_title(req.media_id)
+                if cached_title:
+                    if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and cached_title.get("title") and cached_title["title"] != "Senza Titolo":
+                        resolved_title = cached_title["title"]
+                    if not resolved_poster and cached_title.get("poster_url"):
+                        resolved_poster = cached_title["poster_url"]
+            except Exception:
+                pass
+    if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
+        resolved_title = slug_to_title(req.media_id or "") or "Senza Titolo"
+
     await db.save_watch_progress(
         media_id=req.media_id,
-        title=req.title,
+        title=resolved_title,
         media_type=req.media_type,
-        poster_url=req.poster_url,
+        poster_url=resolved_poster,
         season_number=req.season_number,
         episode_number=req.episode_number,
         progress_seconds=req.progress_seconds,
@@ -1407,11 +1431,27 @@ async def get_media_progress(
 @app.post("/api/favorites/toggle")
 async def toggle_favorite(req: FavoriteRequest) -> dict[str, Any]:
     """Toggle a title as user favorite in SQLite database for active profile."""
+    resolved_title = req.title
+    resolved_poster = req.poster_url
+    if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo") or not resolved_poster:
+        if req.title_id:
+            try:
+                cached_title = await db.get_title(req.title_id)
+                if cached_title:
+                    if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and cached_title.get("title") and cached_title["title"] != "Senza Titolo":
+                        resolved_title = cached_title["title"]
+                    if not resolved_poster and cached_title.get("poster_url"):
+                        resolved_poster = cached_title["poster_url"]
+            except Exception:
+                pass
+    if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
+        resolved_title = slug_to_title(req.title_id or "") or "Senza Titolo"
+
     is_fav = await db.toggle_favorite(
         title_id=req.title_id,
         media_type=req.media_type,
-        title=req.title,
-        poster_url=req.poster_url,
+        title=resolved_title,
+        poster_url=resolved_poster,
         profile_id=req.profile_id,
     )
 
@@ -1422,7 +1462,7 @@ async def toggle_favorite(req: FavoriteRequest) -> dict[str, Any]:
         asyncio.create_task(
             trakt.sync_favorite(
                 media_type=req.media_type,
-                title=req.title,
+                title=resolved_title,
                 tmdb_id=req.tmdb_id,
                 imdb_id=req.imdb_id,
                 is_favorite=is_fav,
@@ -1539,11 +1579,28 @@ async def cast_to_device(req: CastRequest) -> dict[str, Any]:
 
     subtitles_list = [s.to_dict() for s in resolved.subtitles] if resolved.subtitles else None
 
+    # Resolve title and poster if missing or placeholder
+    resolved_title = req.title
+    resolved_poster = req.poster_url
+    if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo") or not resolved_poster:
+        if req.media_id:
+            try:
+                cached_title = await db.get_title(req.media_id)
+                if cached_title:
+                    if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and cached_title.get("title") and cached_title["title"] != "Senza Titolo":
+                        resolved_title = cached_title["title"]
+                    if not resolved_poster and cached_title.get("poster_url"):
+                        resolved_poster = cached_title["poster_url"]
+            except Exception:
+                pass
+    if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
+        resolved_title = slug_to_title(req.media_id or "") or "Senza Titolo"
+
     success, actual_entity = await ha_client.play_on_device(
         entity_id=req.entity_id,
         media_url=lan_stream_url,
-        title=req.title,
-        poster_url=req.poster_url,
+        title=resolved_title,
+        poster_url=resolved_poster,
         mime_type=resolved.mime_type or "application/vnd.apple.mpegurl",
         subtitles=subtitles_list,
     )
@@ -1559,7 +1616,7 @@ async def cast_to_device(req: CastRequest) -> dict[str, Any]:
         ha_client.fire_ha_event(
             "streaming_hub_playback_started",
             {
-                "title": req.title,
+                "title": resolved_title,
                 "media_type": req.media_type,
                 "entity_id": actual_entity,
                 "profile_id": req.profile_id,
@@ -1576,9 +1633,9 @@ async def cast_to_device(req: CastRequest) -> dict[str, Any]:
     ha_client.start_cast_tracker(
         entity_id=actual_entity,
         media_id=req.media_id or "media",
-        title=req.title,
+        title=resolved_title,
         media_type=req.media_type,
-        poster_url=req.poster_url,
+        poster_url=resolved_poster,
         season_number=req.season_number,
         episode_number=req.episode_number,
         db=db,
@@ -1793,7 +1850,8 @@ async def proxy_image(url: str = Query(..., description="Image URL to proxy")) -
     except HTTPException:
         raise
     except Exception as err:
-        _LOGGER.error("Image proxy error for %s: %s", url, err)
+        err_msg = str(err).strip() or "Connection error"
+        _LOGGER.warning("Image proxy error for %s: %s (%s)", url, err_msg, type(err).__name__)
         raise HTTPException(status_code=502, detail="Failed to fetch image") from err
 
 

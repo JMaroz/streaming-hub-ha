@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any
 
@@ -21,6 +22,19 @@ _LOGGER = logging.getLogger(__name__)
 # Determine database path: /data for Home Assistant Add-on persistence, ./data for local dev
 HA_DATA_DIR = Path("/data")
 LOCAL_DATA_DIR = Path("./data")
+
+
+def slug_to_title(media_id: str) -> str:
+    """Derive human-readable title from a media ID slug if possible."""
+    clean = media_id.replace("sc-", "")
+    if "-" in clean:
+        parts = clean.split("-", 1)
+        slug_part = parts[1]
+        slug_part = re.sub(r"_s\d+e\d+$", "", slug_part)
+        words = re.sub(r"[_\-]+", " ", slug_part).strip().title()
+        if words:
+            return words
+    return ""
 
 
 def get_db_path() -> Path:
@@ -178,6 +192,112 @@ class MediaDatabase:
                 CREATE INDEX IF NOT EXISTS idx_favorites_profile_title ON favorites(profile_id, title_id);
             """)
 
+            # 4. Auto-heal any corrupted / empty titles in existing user databases
+            self._migrate_and_heal_sync(conn)
+
+    def _migrate_and_heal_sync(self, conn: sqlite3.Connection) -> None:
+        """Heal corrupted or empty titles in titles, favorites, and watch_history."""
+        try:
+            # 1. Heal empty titles in titles table
+            cursor = conn.execute(
+                "SELECT id, title, original_title, raw_json FROM titles WHERE title IS NULL OR title = '' OR title = 'Senza Titolo'"
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                media_id = str(row["id"])
+                healed_title = ""
+                if row["raw_json"]:
+                    with contextlib.suppress(Exception):
+                        data = json.loads(row["raw_json"])
+                        healed_title = (
+                            data.get("name")
+                            or data.get("title")
+                            or data.get("original_name")
+                            or data.get("original_title")
+                            or ""
+                        )
+                if not healed_title and row["original_title"]:
+                    healed_title = str(row["original_title"])
+                if not healed_title:
+                    healed_title = slug_to_title(media_id)
+                if healed_title:
+                    conn.execute("UPDATE titles SET title = ? WHERE id = ?", (healed_title, media_id))
+
+            # 2. Heal favorites
+            cursor = conn.execute(
+                """
+                SELECT f.id, f.title_id, f.title, f.poster_url, t.title as canonical_title, t.poster_url as canonical_poster, t.raw_json
+                FROM favorites f
+                LEFT JOIN titles t ON f.title_id = t.id
+                WHERE f.title IS NULL OR f.title = '' OR f.title = 'Senza Titolo' OR f.poster_url IS NULL OR f.poster_url = ''
+                """
+            )
+            fav_rows = cursor.fetchall()
+            for row in fav_rows:
+                fav_id = row["id"]
+                title_id = str(row["title_id"])
+                cur_title = str(row["title"] or "")
+                cur_poster = str(row["poster_url"] or "")
+                new_title = cur_title
+                new_poster = cur_poster
+
+                if not cur_title or cur_title == "Senza Titolo":
+                    if row["canonical_title"] and row["canonical_title"] != "Senza Titolo":
+                        new_title = str(row["canonical_title"])
+                    elif row["raw_json"]:
+                        with contextlib.suppress(Exception):
+                            data = json.loads(row["raw_json"])
+                            new_title = str(data.get("name") or data.get("title") or "")
+                    if not new_title or new_title == "Senza Titolo":
+                        new_title = slug_to_title(title_id) or "Senza Titolo"
+
+                if not new_poster and row["canonical_poster"]:
+                    new_poster = str(row["canonical_poster"])
+
+                conn.execute(
+                    "UPDATE favorites SET title = ?, poster_url = ? WHERE id = ?",
+                    (new_title, new_poster, fav_id),
+                )
+
+            # 3. Heal watch_history
+            cursor = conn.execute(
+                """
+                SELECT h.id, h.media_id, h.title, h.poster_url, t.title as canonical_title, t.poster_url as canonical_poster, t.raw_json
+                FROM watch_history h
+                LEFT JOIN titles t ON h.media_id = t.id
+                WHERE h.title IS NULL OR h.title = '' OR h.title = 'Senza Titolo' OR h.poster_url IS NULL OR h.poster_url = ''
+                """
+            )
+            hist_rows = cursor.fetchall()
+            for row in hist_rows:
+                hist_id = row["id"]
+                media_id = str(row["media_id"])
+                cur_title = str(row["title"] or "")
+                cur_poster = str(row["poster_url"] or "")
+                new_title = cur_title
+                new_poster = cur_poster
+
+                if not cur_title or cur_title == "Senza Titolo":
+                    if row["canonical_title"] and row["canonical_title"] != "Senza Titolo":
+                        new_title = str(row["canonical_title"])
+                    elif row["raw_json"]:
+                        with contextlib.suppress(Exception):
+                            data = json.loads(row["raw_json"])
+                            new_title = str(data.get("name") or data.get("title") or "")
+                    if not new_title or new_title == "Senza Titolo":
+                        new_title = slug_to_title(media_id) or "Senza Titolo"
+
+                if not new_poster and row["canonical_poster"]:
+                    new_poster = str(row["canonical_poster"])
+
+                conn.execute(
+                    "UPDATE watch_history SET title = ?, poster_url = ? WHERE id = ?",
+                    (new_title, new_poster, hist_id),
+                )
+            _LOGGER.debug("Database migration and auto-healing completed successfully")
+        except Exception as err:
+            _LOGGER.warning("Database auto-healing error (non-fatal): %s", err)
+
     async def save_title(self, item: Movie | TvSeries) -> None:
         """Persist a movie or TV series title with metadata to SQLite."""
         async with self._lock:
@@ -205,7 +325,11 @@ class MediaDatabase:
                     tmdb_id, imdb_id, trakt_id, catalogs, sources, watch_providers, raw_json, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(id) DO UPDATE SET
-                    title=excluded.title,
+                    title=CASE
+                        WHEN excluded.title IS NOT NULL AND excluded.title != '' AND excluded.title != 'Senza Titolo'
+                        THEN excluded.title
+                        ELSE titles.title
+                    END,
                     original_title=excluded.original_title,
                     year=excluded.year,
                     poster_url=COALESCE(excluded.poster_url, titles.poster_url),
@@ -363,19 +487,27 @@ class MediaDatabase:
         certification: str | None = None,
     ) -> None:
         wp_json = json.dumps(watch_providers or {})
+        effective_title = title
+        if not effective_title or effective_title.strip() in ("", "Senza Titolo"):
+            effective_title = slug_to_title(title_id) or "Senza Titolo"
         with self._get_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO titles (id, media_type, title, year, tmdb_id, rating, certification, watch_providers, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(id) DO UPDATE SET
+                    title = CASE
+                        WHEN excluded.title IS NOT NULL AND excluded.title != '' AND excluded.title != 'Senza Titolo'
+                        THEN excluded.title
+                        ELSE titles.title
+                    END,
                     watch_providers = excluded.watch_providers,
                     tmdb_id = COALESCE(excluded.tmdb_id, titles.tmdb_id),
                     rating = COALESCE(excluded.rating, titles.rating),
                     certification = COALESCE(excluded.certification, titles.certification),
                     updated_at = CURRENT_TIMESTAMP;
                 """,
-                (title_id, media_type, title, year, tmdb_id, rating, certification, wp_json),
+                (title_id, media_type, effective_title, year, tmdb_id, rating, certification, wp_json),
             )
 
     async def enrich_items_with_cached_metadata(self, items: list[Any]) -> None:
@@ -738,7 +870,34 @@ class MediaDatabase:
         """Synchronously upsert watch history."""
         base_id = f"{media_id}_s{season_number}e{episode_number}" if season_number and episode_number else media_id
         hist_id = f"{profile_id}:{base_id}"
+        effective_title = title
+        effective_poster = poster_url
         with self._get_connection() as conn:
+            if not effective_title or effective_title.strip() in ("", "Senza Titolo") or not effective_poster:
+                # 1. Check existing watch_history record for this item
+                h_row = conn.execute("SELECT title, poster_url FROM watch_history WHERE id = ?", (hist_id,)).fetchone()
+                if h_row:
+                    if (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and h_row["title"] and h_row["title"] != "Senza Titolo":
+                        effective_title = h_row["title"]
+                    if not effective_poster and h_row["poster_url"]:
+                        effective_poster = h_row["poster_url"]
+
+                # 2. Check titles table
+                if not effective_title or effective_title.strip() in ("", "Senza Titolo") or not effective_poster:
+                    t_row = conn.execute("SELECT title, poster_url, raw_json FROM titles WHERE id = ?", (media_id,)).fetchone()
+                    if t_row:
+                        if (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["title"] and t_row["title"] != "Senza Titolo":
+                            effective_title = t_row["title"]
+                        elif (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["raw_json"]:
+                            with contextlib.suppress(Exception):
+                                raw_data = json.loads(t_row["raw_json"])
+                                effective_title = raw_data.get("name") or raw_data.get("title")
+                        if not effective_poster and t_row["poster_url"]:
+                            effective_poster = t_row["poster_url"]
+
+            if not effective_title or effective_title.strip() in ("", "Senza Titolo"):
+                effective_title = slug_to_title(media_id) or "Senza Titolo"
+
             conn.execute(
                 """
                 INSERT INTO watch_history (
@@ -748,16 +907,24 @@ class MediaDatabase:
                 ON CONFLICT(id) DO UPDATE SET
                     progress_seconds=excluded.progress_seconds,
                     duration_seconds=excluded.duration_seconds,
-                    title=COALESCE(excluded.title, watch_history.title),
-                    poster_url=COALESCE(excluded.poster_url, watch_history.poster_url),
+                    title=CASE
+                        WHEN excluded.title IS NOT NULL AND excluded.title != '' AND excluded.title != 'Senza Titolo'
+                        THEN excluded.title
+                        ELSE watch_history.title
+                    END,
+                    poster_url=CASE
+                        WHEN excluded.poster_url IS NOT NULL AND excluded.poster_url != ''
+                        THEN excluded.poster_url
+                        ELSE watch_history.poster_url
+                    END,
                     updated_at=CURRENT_TIMESTAMP;
                 """,
                 (
                     hist_id,
                     profile_id,
                     media_id,
-                    title,
-                    poster_url,
+                    effective_title,
+                    effective_poster,
                     media_type,
                     season_number,
                     episode_number,
@@ -821,7 +988,11 @@ class MediaDatabase:
                 duration = float(r.get("duration_seconds") or 0)
                 progress = float(r.get("progress_seconds") or 0)
                 percent = round((progress / duration * 100), 1) if duration > 0 else 0
-                title_name = r.get("title_canonical") or r.get("title") or "Senza Titolo"
+                title_name = r.get("title_canonical")
+                if not title_name or str(title_name).strip() in ("", "Senza Titolo"):
+                    title_name = r.get("title")
+                if not title_name or str(title_name).strip() in ("", "Senza Titolo"):
+                    title_name = slug_to_title(r["media_id"]) or "Senza Titolo"
                 poster = r.get("title_poster") or r.get("poster_url")
                 backdrop = r.get("backdrop_url")
 
@@ -935,7 +1106,11 @@ class MediaDatabase:
                 duration = float(r.get("duration_seconds") or 0)
                 progress = float(r.get("progress_seconds") or 0)
                 percent = round((progress / duration * 100), 1) if duration > 0 else 0
-                title_name = r.get("title_canonical") or r.get("title") or "Senza Titolo"
+                title_name = r.get("title_canonical")
+                if not title_name or str(title_name).strip() in ("", "Senza Titolo"):
+                    title_name = r.get("title")
+                if not title_name or str(title_name).strip() in ("", "Senza Titolo"):
+                    title_name = slug_to_title(r["media_id"]) or "Senza Titolo"
                 poster = r.get("title_poster") or r.get("poster_url")
                 backdrop = r.get("backdrop_url")
 
@@ -1103,13 +1278,30 @@ class MediaDatabase:
             if cursor.fetchone():
                 conn.execute("DELETE FROM favorites WHERE profile_id = ? AND title_id = ?", (profile_id, title_id))
                 return False
+
+            effective_title = title
+            effective_poster = poster_url
+            if not effective_title or effective_title.strip() in ("", "Senza Titolo") or not effective_poster:
+                t_row = conn.execute("SELECT title, poster_url, raw_json FROM titles WHERE id = ?", (title_id,)).fetchone()
+                if t_row:
+                    if (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["title"] and t_row["title"] != "Senza Titolo":
+                        effective_title = t_row["title"]
+                    elif (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["raw_json"]:
+                        with contextlib.suppress(Exception):
+                            raw_data = json.loads(t_row["raw_json"])
+                            effective_title = raw_data.get("name") or raw_data.get("title")
+                    if not effective_poster and t_row["poster_url"]:
+                        effective_poster = t_row["poster_url"]
+            if not effective_title or effective_title.strip() in ("", "Senza Titolo"):
+                effective_title = slug_to_title(title_id) or "Senza Titolo"
+
             conn.execute(
                 """
                 INSERT INTO favorites (id, profile_id, title_id, media_type, title, poster_url, added_at)
                 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(id) DO NOTHING;
                 """,
-                (fav_id, profile_id, title_id, media_type, title, poster_url),
+                (fav_id, profile_id, title_id, media_type, effective_title, effective_poster),
             )
             return True
 
@@ -1124,7 +1316,8 @@ class MediaDatabase:
             cursor = conn.execute(
                 """
                 SELECT f.title_id, f.media_type, f.title, f.poster_url, f.added_at,
-                       t.backdrop_url, t.description, t.year, t.rating, t.duration
+                       t.title as canonical_title, t.poster_url as canonical_poster,
+                       t.backdrop_url, t.description, t.year, t.rating, t.duration, t.raw_json
                 FROM favorites f
                 LEFT JOIN titles t ON f.title_id = t.id
                 WHERE f.profile_id = ?
@@ -1138,6 +1331,20 @@ class MediaDatabase:
                 r = dict(row)
                 r["id"] = r["title_id"]
                 r["type"] = r["media_type"]
+                resolved_title = r.get("title")
+                if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
+                    resolved_title = r.get("canonical_title")
+                if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and r.get("raw_json"):
+                    with contextlib.suppress(Exception):
+                        raw_data = json.loads(r["raw_json"])
+                        resolved_title = raw_data.get("name") or raw_data.get("title")
+                if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
+                    resolved_title = slug_to_title(r["title_id"]) or "Senza Titolo"
+                r["title"] = resolved_title
+
+                if not r.get("poster_url") and r.get("canonical_poster"):
+                    r["poster_url"] = r.get("canonical_poster")
+
                 results.append(r)
             return results
 

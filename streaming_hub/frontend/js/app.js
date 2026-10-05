@@ -1458,9 +1458,10 @@
       ? `<span class="card-badge-cert ${certInfo.class}">${escapeHtml(certInfo.text)}</span>`
       : "";
 
+    const displayTitle = getDisplayTitle(item);
     card.dataset.titleId = item.id;
     card.dataset.mediaType = isTv ? "tv" : "movie";
-    card.dataset.title = item.title || "";
+    card.dataset.title = displayTitle;
     card.dataset.year = item.year || "";
 
 
@@ -1537,7 +1538,7 @@
 
     card.innerHTML = `
       <div class="card-poster-wrap">
-        <img class="card-poster" src="${posterSrc}" alt="${escapeHtml(item.title)}" loading="lazy" onerror="this.onerror=null;this.src='${DEFAULT_POSTER_SVG}';">
+        <img class="card-poster" src="${posterSrc}" alt="${escapeHtml(displayTitle)}" loading="lazy" onerror="this.onerror=null;this.src='${DEFAULT_POSTER_SVG}';">
         <div class="card-badges">
           <span class="card-badge-type">${typeLabel}</span>
           ${dubBadgeHtml}
@@ -1547,7 +1548,7 @@
         ${miniProvidersHtml}
       </div>
       <div class="card-info">
-        <div class="card-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>
+        <div class="card-title" title="${escapeHtml(displayTitle)}">${escapeHtml(displayTitle)}</div>
         <div class="card-subtext">
           <span>${item.year || ""}</span>
           <span>${(item.genres && item.genres[0]) || ""}</span>
@@ -1670,6 +1671,27 @@
     elements.heroSection.classList.remove("hidden");
   }
 
+  // Helper: Format human-readable display title with slug fallback
+  function getDisplayTitle(item) {
+    if (!item) return "Senza Titolo";
+    const raw = item.title || item.name || item.original_title || item.original_name;
+    if (raw && String(raw).trim() && String(raw).trim() !== "Senza Titolo") {
+      return String(raw).trim();
+    }
+    const id = item.id || item.media_id || item.title_id;
+    if (id && typeof id === "string") {
+      const clean = id.replace(/^sc-/, "");
+      if (clean.includes("-")) {
+        const slug = clean.split("-").slice(1).join("-").replace(/_s\d+e\d+$/, "");
+        const words = slug.replace(/[_-]+/g, " ").trim();
+        if (words) {
+          return words.split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+        }
+      }
+    }
+    return "Senza Titolo";
+  }
+
   // Helper: Format seconds to M:SS or H:MM:SS
   function formatTime(seconds) {
     if (!seconds || isNaN(seconds)) return "0:00";
@@ -1790,19 +1812,20 @@
       const card = document.createElement("div");
       card.className = "media-card";
 
-      const posterSrc = getProxiedImageUrl(item.poster_url) || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='450' viewBox='0 0 300 450'%3E%3Crect width='300' height='450' fill='%23182030'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%2364748b' font-family='sans-serif' font-size='18'%3ELocandina%3C/text%3E%3C/svg%3E";
+      const posterSrc = getProxiedImageUrl(item.poster_url) || DEFAULT_POSTER_SVG;
       const isTv = item.type === "tv" || !!item.seasons;
       const typeLabel = isTv ? "Serie TV" : "Film";
+      const displayTitle = getDisplayTitle(item);
 
       card.innerHTML = `
         <div class="card-poster-wrap">
-          <img class="card-poster" src="${posterSrc}" alt="${escapeHtml(item.title)}" loading="lazy">
+          <img class="card-poster" src="${posterSrc}" alt="${escapeHtml(displayTitle)}" loading="lazy" onerror="this.onerror=null;this.src='${DEFAULT_POSTER_SVG}';">
           <div class="card-badges">
             <span class="card-badge-type">${typeLabel}</span>
           </div>
         </div>
         <div class="card-info">
-          <div class="card-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>
+          <div class="card-title" title="${escapeHtml(displayTitle)}">${escapeHtml(displayTitle)}</div>
         </div>
       `;
 
@@ -1847,27 +1870,28 @@
       const card = document.createElement("div");
       card.className = "media-card";
 
-      const posterSrc = getProxiedImageUrl(item.poster_url) || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='450' viewBox='0 0 300 450'%3E%3Crect width='300' height='450' fill='%23182030'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' fill='%2364748b' font-family='sans-serif' font-size='18'%3ELocandina%3C/text%3E%3C/svg%3E";
+      const posterSrc = getProxiedImageUrl(item.poster_url) || DEFAULT_POSTER_SVG;
       const isTv = item.media_type === "tv";
       const typeLabel = isTv ? "Serie TV" : "Film";
+      const displayTitle = getDisplayTitle(item);
 
       card.innerHTML = `
         <div class="card-poster-wrap">
-          <img class="card-poster" src="${posterSrc}" alt="${escapeHtml(item.title)}" loading="lazy">
+          <img class="card-poster" src="${posterSrc}" alt="${escapeHtml(displayTitle)}" loading="lazy" onerror="this.onerror=null;this.src='${DEFAULT_POSTER_SVG}';">
           <div class="card-badges">
             <span class="card-badge-type">${typeLabel}</span>
             <span class="card-badge-rating">✓ Visto</span>
           </div>
         </div>
         <div class="card-info">
-          <div class="card-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>
+          <div class="card-title" title="${escapeHtml(displayTitle)}">${escapeHtml(displayTitle)}</div>
         </div>
       `;
 
       card.addEventListener("click", () => {
         openDetails({
           id: item.media_id,
-          title: item.title,
+          title: displayTitle,
           type: item.media_type,
           poster_url: item.poster_url,
         });
@@ -1881,12 +1905,13 @@
   async function toggleFavoriteItem(item) {
     if (!item || !item.id) return;
     const isTv = item.type === "tv" || !!item.seasons;
+    const displayTitle = getDisplayTitle(item);
 
     try {
       const payload = {
         title_id: item.id,
         media_type: isTv ? "tv" : "movie",
-        title: item.title,
+        title: displayTitle,
         poster_url: item.poster_url || "",
         tmdb_id: item.tmdb_id || null,
         imdb_id: item.imdb_id || null,
@@ -1905,10 +1930,10 @@
 
       if (isFav) {
         state.favoritesSet.add(item.id);
-        showToast(`"${item.title}" aggiunto ai Preferiti! ❤️`, "success");
+        showToast(`"${displayTitle}" aggiunto ai Preferiti! ❤️`, "success");
       } else {
         state.favoritesSet.delete(item.id);
-        showToast(`"${item.title}" rimosso dai Preferiti`, "info");
+        showToast(`"${displayTitle}" rimosso dai Preferiti`, "info");
       }
 
       // Update button visual states
@@ -1972,6 +1997,7 @@
 
       const imgSrc = getProxiedImageUrl(item.backdrop_url) || getProxiedImageUrl(item.poster_url) || "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=60";
       const isTv = item.media_type === "tv";
+      const displayTitle = getDisplayTitle(item);
 
       let epBadgeText = "";
       if (isTv) {
@@ -1994,7 +2020,7 @@
 
       card.innerHTML = `
         <div class="continue-media-wrap">
-          <img class="continue-media-img" src="${imgSrc}" alt="${escapeHtml(item.title)}" loading="lazy">
+          <img class="continue-media-img" src="${imgSrc}" alt="${escapeHtml(displayTitle)}" loading="lazy" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=60';">
           <div class="continue-play-overlay">
             <div class="continue-play-icon">
               <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -2008,7 +2034,7 @@
           <button class="continue-remove-btn" title="Rimuovi da Continua a guardare">✕</button>
         </div>
         <div class="continue-info">
-          <div class="continue-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>
+          <div class="continue-title" title="${escapeHtml(displayTitle)}">${escapeHtml(displayTitle)}</div>
           <div class="continue-subtitle">
             ${epBadgeText ? `<span class="continue-ep-badge">${epBadgeText}</span>` : `<span>Film</span>`}
             <span>${timeText}</span>
@@ -2025,7 +2051,7 @@
         try {
           await fetch(apiUrl(`api/history/${encodeURIComponent(item.media_id)}?profile_id=${encodeURIComponent(state.activeProfileId)}`), { method: "DELETE" });
           loadContinueWatching();
-          showToast(`"${item.title}" rimosso da Continua a guardare`, "info");
+          showToast(`"${displayTitle}" rimosso da Continua a guardare`, "info");
         } catch (err) {
           console.warn("Delete history error:", err);
         }
@@ -2035,7 +2061,7 @@
       card.addEventListener("click", () => {
         const dummyItem = {
           id: item.media_id,
-          title: item.title,
+          title: displayTitle,
           type: item.media_type,
           poster_url: item.poster_url,
           backdrop_url: item.backdrop_url,
@@ -2062,8 +2088,9 @@
 
     const mediaType = itemType === "tv" || !!(item && item.seasons) ? "tv" : "movie";
 
+    const initialDisplayTitle = getDisplayTitle(item);
     // Show initial data
-    elements.modalTitle.textContent = item.title;
+    elements.modalTitle.textContent = initialDisplayTitle;
     elements.modalYear.textContent = item.year || "";
     elements.modalDuration.textContent = item.duration ? `${item.duration} min` : "";
     elements.modalRating.textContent = item.rating ? `★ ${item.rating}` : "";
@@ -2125,6 +2152,10 @@
       if (detailsResp.ok) {
         const detailed = await detailsResp.json();
         state.selectedItem = detailed;
+        const fullTitle = getDisplayTitle(detailed);
+        if (fullTitle && fullTitle !== "Senza Titolo") {
+          elements.modalTitle.textContent = fullTitle;
+        }
         if (detailed.is_favorite !== undefined) {
           if (detailed.is_favorite) state.favoritesSet.add(itemId);
           else state.favoritesSet.delete(itemId);
@@ -2582,9 +2613,10 @@
         }
       }
 
+      const displayTitle = (currentItem ? getDisplayTitle(currentItem) : title) || "Streaming Hub";
       const sessionData = {
         media_id: mediaId,
-        title: currentItem ? currentItem.title : title,
+        title: displayTitle,
         media_type: isTv ? "tv" : "movie",
         poster_url: currentItem ? (currentItem.backdrop_url || currentItem.poster_url || "") : "",
         season_number: seasonNum,
@@ -2615,7 +2647,7 @@
       const streamData = await resp.json();
       state.playbackSession = sessionData;
       closeModal();
-      openPlayer(streamData.local_stream_url, title);
+      openPlayer(streamData.local_stream_url, displayTitle);
     } catch (err) {
       console.error("Play error:", err);
       showToast(err.message || "Impossibile avviare il video", "error");
@@ -2631,6 +2663,7 @@
     const seasonNum = isTv ? state.selectedSeason : null;
     const epNum = (isTv && state.selectedEpisode) ? state.selectedEpisode.episode_number : null;
     const mediaId = currentItem ? currentItem.id : source.media_id;
+    const effectiveTitle = (title && title !== "Senza Titolo") ? title : ((currentItem ? getDisplayTitle(currentItem) : "") || "Streaming Hub");
 
     let hasResume = false;
     let resumeSec = 0;
@@ -2662,7 +2695,7 @@
       const payload = {
         entity_id: entityId,
         page_url: source.page_url,
-        title: title,
+        title: effectiveTitle,
         poster_url: posterUrl,
         provider_id: source.provider_id,
         media_id: mediaId,

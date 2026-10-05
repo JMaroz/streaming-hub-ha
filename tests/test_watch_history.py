@@ -8,6 +8,9 @@ from pathlib import Path
 import tempfile
 
 from streaming_hub.backend.database import MediaDatabase
+from streaming_hub.backend.engine_reactive import ReactiveStreamClient
+from streaming_hub.backend.models import Movie
+from streaming_hub.backend.utils import CatalogMerger
 
 
 class TestWatchHistory:
@@ -282,3 +285,129 @@ class TestWatchHistory:
             self.db.get_media_progress("series_Y", profile_id="default", season_number=1, episode_number=1)
         )
         assert prog_y is None
+
+    def test_slug_to_title_helper_and_auto_healing(self) -> None:
+        """Test that empty or placeholder titles in titles, favorites, and watch_history are auto-healed."""
+        # 1. Directly insert corrupted records with empty titles and valid slugs into tables
+        with self.db._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO titles (id, media_type, title, raw_json)
+                VALUES ('sc-530915-resident-evil-the-final-chapter', 'movie', '', '{"title": "Resident Evil: The Final Chapter"}')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO favorites (id, profile_id, title_id, media_type, title)
+                VALUES ('default:sc-530915-resident-evil-the-final-chapter', 'default', 'sc-530915-resident-evil-the-final-chapter', 'movie', '')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO watch_history (id, profile_id, media_id, media_type, title, progress_seconds, duration_seconds)
+                VALUES ('default:sc-530915-resident-evil-the-final-chapter', 'default', 'sc-530915-resident-evil-the-final-chapter', 'movie', 'Senza Titolo', 500, 3600)
+                """
+            )
+
+        # 2. Trigger auto-healing
+        with self.db._get_connection() as conn:
+            self.db._migrate_and_heal_sync(conn)
+
+        # 3. Verify healed titles
+        title_rec = asyncio.run(self.db.get_title_record("sc-530915-resident-evil-the-final-chapter"))
+        assert title_rec is not None
+        with self.db._get_connection() as conn:
+            row = conn.execute("SELECT title FROM titles WHERE id = 'sc-530915-resident-evil-the-final-chapter'").fetchone()
+            assert row["title"] == "Resident Evil: The Final Chapter"
+
+            fav_row = conn.execute("SELECT title FROM favorites WHERE title_id = 'sc-530915-resident-evil-the-final-chapter'").fetchone()
+            assert fav_row["title"] == "Resident Evil: The Final Chapter"
+
+            hist_row = conn.execute("SELECT title FROM watch_history WHERE media_id = 'sc-530915-resident-evil-the-final-chapter'").fetchone()
+            assert hist_row["title"] == "Resident Evil: The Final Chapter"
+
+        # 4. Verify get_favorites and get_continue_watching return healed title
+        favs = asyncio.run(self.db.get_favorites("default"))
+        assert len(favs) == 1
+        assert favs[0]["title"] == "Resident Evil: The Final Chapter"
+
+        cw = asyncio.run(self.db.get_continue_watching("default"))
+        assert len(cw) == 1
+        assert cw[0]["title"] == "Resident Evil: The Final Chapter"
+
+    def test_prevent_empty_title_overwriting(self) -> None:
+        """Test that saving progress or updating with empty title does not overwrite an existing valid title."""
+        # 1. Save valid initial progress
+        asyncio.run(
+            self.db.save_watch_progress(
+                media_id="sc-999-gladiator",
+                title="Il Gladiatore",
+                media_type="movie",
+                poster_url="https://image.tmdb.org/poster.jpg",
+                progress_seconds=100.0,
+                duration_seconds=5000.0,
+            )
+        )
+
+        # 2. Update with empty title (simulating client bug)
+        asyncio.run(
+            self.db.save_watch_progress(
+                media_id="sc-999-gladiator",
+                title="",
+                media_type="movie",
+                poster_url=None,
+                progress_seconds=200.0,
+                duration_seconds=5000.0,
+            )
+        )
+
+        # 3. Ensure title was preserved
+        cw = asyncio.run(self.db.get_continue_watching("default"))
+        assert len(cw) == 1
+        assert cw[0]["title"] == "Il Gladiatore"
+
+    def test_favorites_fallback_resolution_from_slug(self) -> None:
+        """Test that favorites with missing title fall back to slug cleanly."""
+        asyncio.run(
+            self.db.toggle_favorite(
+                title_id="sc-777-the-odyssey",
+                media_type="movie",
+                title="",
+                poster_url="",
+            )
+        )
+
+        favs = asyncio.run(self.db.get_favorites("default"))
+        assert len(favs) == 1
+        assert favs[0]["title"] == "The Odyssey"
+
+    def test_catalog_merger_heals_empty_existing_title(self) -> None:
+        """Test that CatalogMerger updates existing title if existing was empty or 'Senza Titolo'."""
+        existing = Movie(id="sc-1", title="", year=2024)
+        incoming = Movie(id="sc-1", title="Dune: Part Two", year=2024)
+        merged = CatalogMerger.merge_movie(existing, incoming)
+        assert merged.title == "Dune: Part Two"
+
+        existing_placeholder = Movie(id="sc-1", title="Senza Titolo", year=2024)
+        merged_placeholder = CatalogMerger.merge_movie(existing_placeholder, incoming)
+        assert merged_placeholder.title == "Dune: Part Two"
+
+    def test_reactive_engine_item_to_movie_title_fallbacks(self) -> None:
+        """Test ReactiveStreamClient._item_to_movie extracts titles across TMDb conventions."""
+        client = ReactiveStreamClient(base_url="https://example.com")
+
+        # 1. Standard TMDb movie payload with 'title'
+        movie1 = client._item_to_movie({"id": 101, "title": "Heart of the Beast", "slug": "heart-of-the-beast"})
+        assert movie1.title == "Heart of the Beast"
+
+        # 2. Movie payload with 'original_title'
+        movie2 = client._item_to_movie({"id": 102, "original_title": "The Odyssey", "slug": "the-odyssey"})
+        assert movie2.title == "The Odyssey"
+
+        # 3. Payload with only slug
+        movie3 = client._item_to_movie({"id": 103, "slug": "resident-evil-the-final-chapter"})
+        assert movie3.title == "Resident Evil The Final Chapter"
+
+        # 4. Fallback when completely empty
+        movie4 = client._item_to_movie({"id": 104})
+        assert movie4.title == "Senza Titolo"
