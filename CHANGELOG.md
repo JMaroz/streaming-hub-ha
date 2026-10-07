@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.8.0](https://github.com/JMaroz/streaming-hub-ha/compare/v2.7.0...v2.8.0) (2026-10-07)
+
+
+### Features
+
+* **playback:** improve cast sync, series completion, skip markers, and tmdb integration ([0755663](https://github.com/JMaroz/streaming-hub-ha/commit/07556634d8cc1e390c0091f36f2d94e606684647))
+* **ui:** remove watched shelf and provider badge from media cards ([d939bc1](https://github.com/JMaroz/streaming-hub-ha/commit/d939bc11bd5322c3b98ddba16dae0b93632a90ba))
+* use 2.7.0 query parameter version ([f4f37e8](https://github.com/JMaroz/streaming-hub-ha/commit/f4f37e8c40cceb5f7f2318c3a78b218921a2278a))
+
+
+### Bug Fixes
+
+* **catalog:** resolve missing movie titles and auto-heal stored history ([17b607c](https://github.com/JMaroz/streaming-hub-ha/commit/17b607cdb155bbe3b754e6af88000195d6a0cff8))
+
 ## [2.7.0](https://github.com/JMaroz/streaming-hub-ha/compare/v2.6.1...v2.7.0) (2026-10-04)
 
 
