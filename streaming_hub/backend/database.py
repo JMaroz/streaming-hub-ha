@@ -133,6 +133,16 @@ class MediaDatabase:
                     poster_url TEXT,
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS tmdb_sessions (
+                    profile_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    account_id INTEGER,
+                    username TEXT,
+                    avatar_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
             """)
 
             # 2. Safe SQLite Schema Migrations for existing user databases
@@ -969,14 +979,14 @@ class MediaDatabase:
                        t.backdrop_url, t.poster_url as title_poster, t.title as title_canonical
                 FROM watch_history h
                 INNER JOIN (
-                    SELECT media_id, MAX(updated_at) as max_updated
+                    SELECT media_id, MAX(rowid) as max_rowid
                     FROM watch_history
                     WHERE profile_id = ?
                     GROUP BY media_id
-                ) latest ON h.media_id = latest.media_id AND h.updated_at = latest.max_updated
+                ) latest ON h.rowid = latest.max_rowid
                 LEFT JOIN titles t ON h.media_id = t.id
                 WHERE h.profile_id = ?
-                ORDER BY h.updated_at DESC
+                ORDER BY h.updated_at DESC, h.rowid DESC
                 LIMIT ?;
             """
             cursor = conn.execute(query, (profile_id, profile_id, limit * 2))
@@ -1022,7 +1032,11 @@ class MediaDatabase:
                     curr_season = r.get("season_number") or 1
                     curr_ep = r.get("episode_number") or 1
 
-                    is_completed = percent >= 90 or (duration > 120 and (duration - progress) < 90)
+                    is_completed = (
+                        percent >= 90
+                        or (duration > 120 and (duration - progress) < 90)
+                        or (duration == 0 and progress > 1200)
+                    )
                     if is_completed:
                         next_ep = self._find_next_episode_sync(conn, r["media_id"], curr_season, curr_ep)
                         if next_ep:
@@ -1245,7 +1259,26 @@ class MediaDatabase:
 
             cursor = conn.execute(query, params)
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            res = dict(row)
+            if season_number is None and episode_number is None and res.get("media_type") == "tv":
+                curr_s = int(res.get("season_number") or 1)
+                curr_e = int(res.get("episode_number") or 1)
+                dur = float(res.get("duration_seconds") or 0)
+                prog = float(res.get("progress_seconds") or 0)
+                pct = (prog / dur * 100) if dur > 0 else 0
+                is_done = pct >= 85 or (dur > 120 and (dur - prog) < 90) or (dur == 0 and prog > 1200)
+                if is_done:
+                    next_ep = self._find_next_episode_sync(conn, media_id, curr_s, curr_e)
+                    if next_ep:
+                        res["season_number"] = next_ep["season_number"]
+                        res["episode_number"] = next_ep["episode_number"]
+                        res["progress_seconds"] = 0
+                        res["is_next_episode"] = True
+                    else:
+                        res["is_completed"] = True
+            return res
 
     async def toggle_favorite(
         self,
@@ -1445,3 +1478,172 @@ class MediaDatabase:
                 ]
 
             return tv_candidates + movie_candidates
+
+    async def save_tmdb_session(
+        self,
+        profile_id: str,
+        session_id: str,
+        account_id: int | None = None,
+        username: str | None = None,
+        avatar_url: str | None = None,
+    ) -> None:
+        """Persist TMDb session for a user profile."""
+        async with self._lock:
+            await asyncio.to_thread(
+                self._save_tmdb_session_sync,
+                profile_id,
+                session_id,
+                account_id,
+                username,
+                avatar_url,
+            )
+
+    def _save_tmdb_session_sync(
+        self,
+        profile_id: str,
+        session_id: str,
+        account_id: int | None = None,
+        username: str | None = None,
+        avatar_url: str | None = None,
+    ) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO tmdb_sessions (profile_id, session_id, account_id, username, avatar_url, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(profile_id) DO UPDATE SET
+                    session_id=excluded.session_id,
+                    account_id=excluded.account_id,
+                    username=excluded.username,
+                    avatar_url=excluded.avatar_url,
+                    updated_at=CURRENT_TIMESTAMP;
+                """,
+                (profile_id, session_id, account_id, username, avatar_url),
+            )
+
+    async def get_tmdb_session(self, profile_id: str = "default") -> dict[str, Any] | None:
+        """Get TMDb session record for a user profile."""
+        async with self._lock:
+            return await asyncio.to_thread(self._get_tmdb_session_sync, profile_id)
+
+    def _get_tmdb_session_sync(self, profile_id: str) -> dict[str, Any] | None:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT profile_id, session_id, account_id, username, avatar_url, updated_at FROM tmdb_sessions WHERE profile_id = ?",
+                (profile_id,),
+            ).fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    async def delete_tmdb_session(self, profile_id: str = "default") -> bool:
+        """Delete TMDb session for a user profile."""
+        async with self._lock:
+            return await asyncio.to_thread(self._delete_tmdb_session_sync, profile_id)
+
+    def _delete_tmdb_session_sync(self, profile_id: str) -> bool:
+        with self._get_connection() as conn:
+            cursor = conn.execute("DELETE FROM tmdb_sessions WHERE profile_id = ?", (profile_id,))
+            return cursor.rowcount > 0
+
+    async def add_favorite(
+        self,
+        title_id: str,
+        media_type: str,
+        title: str,
+        poster_url: str | None = None,
+        profile_id: str = "default",
+    ) -> bool:
+        """Add a title to favorites if not already present."""
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._add_favorite_sync,
+                title_id,
+                media_type,
+                title,
+                poster_url,
+                profile_id,
+            )
+
+    def _add_favorite_sync(
+        self,
+        title_id: str,
+        media_type: str,
+        title: str,
+        poster_url: str | None = None,
+        profile_id: str = "default",
+    ) -> bool:
+        fav_id = f"fav_{profile_id}_{title_id}"
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT 1 FROM favorites WHERE profile_id = ? AND title_id = ? LIMIT 1",
+                (profile_id, title_id),
+            )
+            if cursor.fetchone():
+                return False
+            conn.execute(
+                """
+                INSERT INTO favorites (id, profile_id, title_id, media_type, title, poster_url, added_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO NOTHING;
+                """,
+                (fav_id, profile_id, title_id, media_type, title, poster_url),
+            )
+            return True
+
+    async def get_titles_for_enrichment(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Retrieve titles that need metadata enrichment or have stale metadata."""
+        async with self._lock:
+            return await asyncio.to_thread(self._get_titles_for_enrichment_sync, limit)
+
+    def _get_titles_for_enrichment_sync(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, media_type, title, year, poster_url, backdrop_url, tmdb_id, imdb_id, updated_at
+                FROM titles
+                WHERE tmdb_id IS NULL
+                   OR backdrop_url IS NULL
+                   OR certification IS NULL
+                   OR updated_at <= datetime('now', '-14 days')
+                ORDER BY
+                    CASE WHEN tmdb_id IS NULL THEN 0 ELSE 1 END,
+                    updated_at ASC
+                LIMIT ?;
+                """,
+                (limit,),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    async def find_title_by_tmdb_or_query(
+        self,
+        title: str,
+        media_type: str | None = None,
+        tmdb_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Find an existing title in the database matching a tmdb_id or title query."""
+        async with self._lock:
+            return await asyncio.to_thread(self._find_title_by_tmdb_or_query_sync, title, media_type, tmdb_id)
+
+    def _find_title_by_tmdb_or_query_sync(
+        self,
+        title: str,
+        media_type: str | None = None,
+        tmdb_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        with self._get_connection() as conn:
+            if tmdb_id:
+                row = conn.execute("SELECT * FROM titles WHERE tmdb_id = ? LIMIT 1", (tmdb_id,)).fetchone()
+                if row:
+                    return dict(row)
+            if title:
+                q = "SELECT * FROM titles WHERE LOWER(title) = LOWER(?)"
+                params: list[Any] = [title.strip()]
+                if media_type:
+                    q += " AND media_type = ?"
+                    params.append(media_type)
+                q += " LIMIT 1"
+                row = conn.execute(q, params).fetchone()
+                if row:
+                    return dict(row)
+            return None

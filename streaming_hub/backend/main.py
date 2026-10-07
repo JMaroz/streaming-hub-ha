@@ -631,6 +631,15 @@ class ValidateTmdbKeyRequest(BaseModel):
     save: bool = False
 
 
+class TmdbSessionRequest(BaseModel):
+    request_token: str
+    profile_id: str = "default"
+
+
+class TmdbAccountSyncRequest(BaseModel):
+    profile_id: str = "default"
+
+
 @app.get("/api/settings")
 async def get_settings() -> dict[str, Any]:
     """Retrieve current settings, configured sources, and active engines."""
@@ -667,6 +676,241 @@ async def validate_tmdb_key(req: ValidateTmdbKeyRequest | None = None) -> dict[s
         "valid": valid,
         "message": message,
         "configured": bool(metadata_enricher.tmdb_api_key),
+    }
+
+
+@app.post("/api/metadata/sync-catalog")
+async def sync_catalog_metadata(limit: int = Query(50, ge=1, le=100)) -> dict[str, Any]:
+    """Batch enrich local catalog titles with high-res TMDb metadata, backdrop, genres, and certification."""
+    tmdb_key = CONFIG.get("tmdb_api_key") or metadata_enricher.tmdb_api_key
+    if not tmdb_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Chiave API TMDb non configurata. Inserisci e verifica una chiave valida nelle Impostazioni.",
+        )
+
+    candidates = await db.get_titles_for_enrichment(limit=limit)
+    if not candidates:
+        return {
+            "status": "ok",
+            "message": "Tutti i titoli sono già sincronizzati e aggiornati.",
+            "scanned": 0,
+            "enriched": 0,
+            "errors": 0,
+        }
+
+    sem = asyncio.Semaphore(5)
+    enriched_count = 0
+    error_count = 0
+
+    async def _enrich_candidate(c: dict[str, Any]) -> None:
+        nonlocal enriched_count, error_count
+        async with sem:
+            try:
+                media_id = c["id"]
+                media_type = c.get("media_type", "movie")
+                full_title_rec = await db.get_title(media_id)
+                resolved_title = full_title_rec.get("title") if full_title_rec else c.get("title")
+                year = full_title_rec.get("year") if full_title_rec else c.get("year")
+
+                if media_type == "tv":
+                    series = (
+                        TvSeries.from_dict(full_title_rec)
+                        if full_title_rec
+                        else TvSeries(id=media_id, title=resolved_title or "Senza Titolo", year=year)
+                    )
+                    await metadata_enricher.enrich_tv_series(series, api_key=tmdb_key)
+                    await db.save_title(series)
+                else:
+                    movie = (
+                        Movie.from_dict(full_title_rec)
+                        if full_title_rec
+                        else Movie(id=media_id, title=resolved_title or "Senza Titolo", year=year)
+                    )
+                    await metadata_enricher.enrich_movie(movie, api_key=tmdb_key)
+                    await db.save_title(movie)
+                enriched_count += 1
+            except Exception as err:
+                _LOGGER.debug("Sync catalog item %s failed: %s", c.get("id"), err)
+                error_count += 1
+
+    await asyncio.gather(*[_enrich_candidate(c) for c in candidates], return_exceptions=True)
+    return {
+        "status": "ok",
+        "message": f"Sincronizzazione completata: {enriched_count} arricchiti, {error_count} falliti su {len(candidates)} esaminati.",
+        "scanned": len(candidates),
+        "enriched": enriched_count,
+        "errors": error_count,
+    }
+
+
+@app.get("/api/tmdb/account/status")
+async def get_tmdb_account_status(profile_id: str = Query("default")) -> dict[str, Any]:
+    """Retrieve personal TMDb connection status for a profile."""
+    profile = get_profile_by_id(profile_id)
+    session_rec = await db.get_tmdb_session(profile.id)
+    if not session_rec:
+        return {
+            "connected": False,
+            "username": None,
+            "account_id": None,
+            "avatar_url": None,
+        }
+    return {
+        "connected": True,
+        "username": session_rec.get("username"),
+        "account_id": session_rec.get("account_id"),
+        "avatar_url": session_rec.get("avatar_url"),
+        "updated_at": session_rec.get("updated_at"),
+    }
+
+
+@app.post("/api/tmdb/auth/request-token")
+async def create_tmdb_request_token(profile_id: str = Query("default")) -> dict[str, Any]:
+    """Generate a TMDb v3 request token and authorization URL."""
+    tmdb_key = CONFIG.get("tmdb_api_key") or metadata_enricher.tmdb_api_key
+    if not tmdb_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Chiave API TMDb globale non configurata.",
+        )
+    res = await metadata_enricher.create_request_token(api_key=tmdb_key)
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Errore generazione request token"))
+    return res
+
+
+@app.post("/api/tmdb/auth/session")
+async def create_tmdb_session(req: TmdbSessionRequest) -> dict[str, Any]:
+    """Exchange approved request token for a TMDb session ID and store user profile link."""
+    tmdb_key = CONFIG.get("tmdb_api_key") or metadata_enricher.tmdb_api_key
+    if not tmdb_key:
+        raise HTTPException(status_code=400, detail="Chiave API TMDb non configurata.")
+
+    session_id = await metadata_enricher.create_session_id(req.request_token, api_key=tmdb_key)
+    if not session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Autorizzazione TMDb non completata o token scaduto. Approva l'accesso sul sito di TMDb e riprova.",
+        )
+
+    # Fetch user account details
+    account = await metadata_enricher.get_account_details(session_id, api_key=tmdb_key)
+    if not account or "id" not in account:
+        raise HTTPException(status_code=400, detail="Impossibile recuperare i dettagli dell'account TMDb.")
+
+    username = account.get("username") or account.get("name") or "Utente TMDb"
+    account_id = account.get("id")
+    avatar_path = (account.get("avatar") or {}).get("tmdb", {}).get("avatar_path")
+    avatar_url = f"https://image.tmdb.org/t/p/w200{avatar_path}" if avatar_path else None
+
+    profile = get_profile_by_id(req.profile_id)
+    await db.save_tmdb_session(
+        profile_id=profile.id,
+        session_id=session_id,
+        account_id=account_id,
+        username=username,
+        avatar_url=avatar_url,
+    )
+
+    return {
+        "success": True,
+        "username": username,
+        "account_id": account_id,
+        "avatar_url": avatar_url,
+    }
+
+
+@app.delete("/api/tmdb/auth/session")
+async def delete_tmdb_session(profile_id: str = Query("default")) -> dict[str, Any]:
+    """Disconnect personal TMDb account from user profile."""
+    profile = get_profile_by_id(profile_id)
+    deleted = await db.delete_tmdb_session(profile.id)
+    return {"success": deleted}
+
+
+@app.post("/api/tmdb/account/sync")
+async def sync_tmdb_account(req: TmdbAccountSyncRequest) -> dict[str, Any]:
+    """Bidirectionally synchronize user TMDb favorites and watchlist with Streaming Hub profile favorites."""
+    tmdb_key = CONFIG.get("tmdb_api_key") or metadata_enricher.tmdb_api_key
+    profile = get_profile_by_id(req.profile_id)
+    session_rec = await db.get_tmdb_session(profile.id)
+    if not session_rec or not session_rec.get("session_id") or not session_rec.get("account_id"):
+        raise HTTPException(
+            status_code=400,
+            detail="Nessun account TMDb collegato a questo profilo. Esegui prima l'accesso con TMDb.",
+        )
+
+    session_id = session_rec["session_id"]
+    account_id = session_rec["account_id"]
+
+    # 1. Pull Favorites and Watchlist from TMDb
+    fav_movies = await metadata_enricher.get_account_favorites(session_id, account_id, "movies", api_key=tmdb_key)
+    fav_tv = await metadata_enricher.get_account_favorites(session_id, account_id, "tv", api_key=tmdb_key)
+    watch_movies = await metadata_enricher.get_account_watchlist(session_id, account_id, "movies", api_key=tmdb_key)
+    watch_tv = await metadata_enricher.get_account_watchlist(session_id, account_id, "tv", api_key=tmdb_key)
+
+    imported_favorites = 0
+    imported_watchlist = 0
+
+    # Helper to add TMDb item to local favorites
+    async def _import_items(items: list[dict[str, Any]], media_type: str) -> int:
+        count = 0
+        for item in items:
+            tmdb_id = item.get("id")
+            if not tmdb_id:
+                continue
+            title = item.get("title") or item.get("name") or "Senza Titolo"
+            poster_path = item.get("poster_path")
+            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+
+            # Check if matching local title exists
+            existing = await db.find_title_by_tmdb_or_query(title=title, media_type=media_type, tmdb_id=tmdb_id)
+            title_id = existing["id"] if existing else f"tmdb-{tmdb_id}"
+
+            added = await db.add_favorite(
+                title_id=title_id,
+                media_type=media_type,
+                title=title,
+                poster_url=poster_url,
+                profile_id=profile.id,
+            )
+            if added:
+                count += 1
+        return count
+
+    imported_favorites += await _import_items(fav_movies, "movie")
+    imported_favorites += await _import_items(fav_tv, "tv")
+    imported_watchlist += await _import_items(watch_movies, "movie")
+    imported_watchlist += await _import_items(watch_tv, "tv")
+
+    # 2. Push local favorites with tmdb_id back to TMDb favorites (bidirectional sync)
+    pushed_count = 0
+    local_favs = await db.get_favorites(profile_id=profile.id)
+    for fav in local_favs:
+        t_id = fav.get("id", "")
+        t_rec = await db.get_title(t_id)
+        if t_rec and t_rec.get("tmdb_id"):
+            m_type = "movie" if fav.get("type") == "movie" else "tv"
+            success = await metadata_enricher.post_account_favorite(
+                session_id=session_id,
+                account_id=account_id,
+                media_type=m_type,
+                media_id=int(t_rec["tmdb_id"]),
+                favorite=True,
+                api_key=tmdb_key,
+            )
+            if success:
+                pushed_count += 1
+
+    total_synced = imported_favorites + imported_watchlist + pushed_count
+    return {
+        "status": "ok",
+        "message": f"Sincronizzazione completata: {imported_favorites} preferiti importati, {imported_watchlist} watchlist importati, {pushed_count} esportati su TMDb.",
+        "imported_favorites": imported_favorites,
+        "imported_watchlist": imported_watchlist,
+        "pushed_to_tmdb": pushed_count,
+        "total_synced": total_synced,
     }
 
 
@@ -852,6 +1096,9 @@ async def get_home_catalog(
 
     hero_dict = None
     if selected_hero:
+        with contextlib.suppress(Exception):
+            await metadata_enricher.enrich(selected_hero)
+            await db.save_title(selected_hero)
         hero_dict = selected_hero.to_dict()
         hero_dict["streaming_availability"] = extract_streaming_availability(hero_dict, active_country)
 
@@ -1732,16 +1979,37 @@ async def get_skip_segments_endpoint(
     title_data = await db.get_title(series_id)
     imdb_id = title_data.get("imdb_id") if title_data else None
 
+    if not imdb_id and series_id.startswith("tt"):
+        imdb_id = series_id
+
     if not imdb_id and title_data:
-        # Try resolving via Cinemeta if missing
-        title_name = title_data.get("title", "")
-        if title_name:
-            clean_id = await metadata_enricher._search_cinemeta_imdb_id("series", title_name)
-            if clean_id:
-                imdb_id = clean_id
-                title_data["imdb_id"] = clean_id
-                with contextlib.suppress(Exception):
-                    await db.save_title(TvSeries.from_dict(title_data))
+        # 1. Try TMDb external_ids if tmdb_id is known
+        tmdb_id = title_data.get("tmdb_id")
+        if tmdb_id:
+            with contextlib.suppress(Exception):
+                found_id = await metadata_enricher.get_imdb_id("tv", int(tmdb_id))
+                if found_id:
+                    imdb_id = found_id
+                    title_data["imdb_id"] = found_id
+                    with contextlib.suppress(Exception):
+                        await db.save_title(TvSeries.from_dict(title_data))
+
+        # 2. Try Cinemeta search by title if still missing
+        if not imdb_id:
+            title_name = title_data.get("title", "")
+            if title_name:
+                clean_id = await metadata_enricher._search_cinemeta_imdb_id("series", title_name)
+                if clean_id:
+                    imdb_id = clean_id
+                    title_data["imdb_id"] = clean_id
+                    with contextlib.suppress(Exception):
+                        await db.save_title(TvSeries.from_dict(title_data))
+
+    if not imdb_id and not title_data:
+        clean_name = slug_to_title(series_id) or series_id
+        clean_id = await metadata_enricher._search_cinemeta_imdb_id("series", clean_name)
+        if clean_id:
+            imdb_id = clean_id
 
     return await skip_segments_manager.get_skip_segments(
         imdb_id=imdb_id,

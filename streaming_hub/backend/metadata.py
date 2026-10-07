@@ -90,6 +90,29 @@ class MetadataEnricher:
             _LOGGER.debug("Request failed for %s: %s", url, err)
         return None
 
+    async def _post_json(
+        self,
+        url: str,
+        json_data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Post JSON helper to given URL."""
+        session = await self._get_session()
+        req_headers = {"User-Agent": USER_AGENT, "Content-Type": "application/json"}
+        if headers:
+            req_headers.update(headers)
+        try:
+            async with session.post(
+                url, json=json_data, params=params, headers=req_headers, timeout=aiohttp.ClientTimeout(total=8)
+            ) as resp:
+                if resp.status in (200, 201):
+                    return await resp.json()
+                _LOGGER.debug("POST %s failed with status %s", url, resp.status)
+        except Exception as err:
+            _LOGGER.debug("POST failed for %s: %s", url, err)
+        return None
+
     async def close(self) -> None:
         """Close session if internally owned."""
         if self._own_session and self._session and not self._session.closed:
@@ -108,6 +131,18 @@ class MetadataEnricher:
                     return metas[0]["id"]
         except Exception as err:
             _LOGGER.debug("Cinemeta title search failed for %s: %s", title, err)
+        return None
+
+    async def get_imdb_id(self, media_type: str, tmdb_id: int) -> str | None:
+        """Fetch IMDb ID for a given TMDb ID from TMDb external_ids endpoint."""
+        endpoint_type = "tv" if media_type in ("tv", "series") else "movie"
+        url = f"{TMDB_BASE_URL}/{endpoint_type}/{tmdb_id}/external_ids"
+        headers, params = self._get_tmdb_auth()
+        data = await self._get_json(url, params=params, headers=headers)
+        if data and isinstance(data, dict):
+            clean = data.get("imdb_id")
+            if clean and str(clean).startswith("tt"):
+                return str(clean)
         return None
 
     def clear_cache(self) -> None:
@@ -145,6 +180,109 @@ class MetadataEnricher:
         except Exception as err:
             _LOGGER.warning("TMDb validation request failed: %s", err)
             return False, f"Impossibile contattare i server TMDb: {err}"
+
+    async def create_request_token(self, api_key: str | None = None) -> dict[str, Any]:
+        """Create a new TMDb v3 authentication request token."""
+        auth_headers, auth_params = self._get_tmdb_auth(api_key)
+        if not auth_headers and not auth_params:
+            return {"success": False, "error": "Chiave API TMDb non configurata"}
+        url = f"{TMDB_BASE_URL}/authentication/token/new"
+        data = await self._get_json(url, params=auth_params, headers=auth_headers)
+        if data and data.get("success"):
+            req_token = data.get("request_token")
+            return {
+                "success": True,
+                "request_token": req_token,
+                "expires_at": data.get("expires_at"),
+                "auth_url": f"https://www.themoviedb.org/authenticate/{req_token}",
+            }
+        return {"success": False, "error": "Creazione request token TMDb fallita"}
+
+    async def create_session_id(self, request_token: str, api_key: str | None = None) -> str | None:
+        """Exchange an approved request token for a TMDb session ID."""
+        auth_headers, auth_params = self._get_tmdb_auth(api_key)
+        url = f"{TMDB_BASE_URL}/authentication/session/new"
+        data = await self._post_json(
+            url, json_data={"request_token": request_token}, params=auth_params, headers=auth_headers
+        )
+        if data and data.get("success"):
+            return str(data.get("session_id"))
+        return None
+
+    async def get_account_details(self, session_id: str, api_key: str | None = None) -> dict[str, Any] | None:
+        """Fetch TMDb account profile details for an active session ID."""
+        auth_headers, auth_params = self._get_tmdb_auth(api_key)
+        params = {"session_id": session_id, **auth_params}
+        url = f"{TMDB_BASE_URL}/account"
+        return await self._get_json(url, params=params, headers=auth_headers)
+
+    async def get_account_favorites(
+        self, session_id: str, account_id: int, media_type: str = "movies", api_key: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch user favorite movies or TV shows from TMDb."""
+        auth_headers, auth_params = self._get_tmdb_auth(api_key)
+        endpoint = "favorite/movies" if media_type == "movies" else "favorite/tv"
+        url = f"{TMDB_BASE_URL}/account/{account_id}/{endpoint}"
+        params = {"session_id": session_id, "language": "it-IT", "page": 1, **auth_params}
+        data = await self._get_json(url, params=params, headers=auth_headers)
+        if data and "results" in data:
+            return data["results"]
+        return []
+
+    async def get_account_watchlist(
+        self, session_id: str, account_id: int, media_type: str = "movies", api_key: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch user watchlist movies or TV shows from TMDb."""
+        auth_headers, auth_params = self._get_tmdb_auth(api_key)
+        endpoint = "watchlist/movies" if media_type == "movies" else "watchlist/tv"
+        url = f"{TMDB_BASE_URL}/account/{account_id}/{endpoint}"
+        params = {"session_id": session_id, "language": "it-IT", "page": 1, **auth_params}
+        data = await self._get_json(url, params=params, headers=auth_headers)
+        if data and "results" in data:
+            return data["results"]
+        return []
+
+    async def post_account_favorite(
+        self,
+        session_id: str,
+        account_id: int,
+        media_type: str,
+        media_id: int,
+        favorite: bool = True,
+        api_key: str | None = None,
+    ) -> bool:
+        """Mark or unmark a title as favorite on TMDb account."""
+        auth_headers, auth_params = self._get_tmdb_auth(api_key)
+        url = f"{TMDB_BASE_URL}/account/{account_id}/favorite"
+        params = {"session_id": session_id, **auth_params}
+        payload = {
+            "media_type": media_type,
+            "media_id": media_id,
+            "favorite": favorite,
+        }
+        res = await self._post_json(url, json_data=payload, params=params, headers=auth_headers)
+        return bool(res and res.get("success"))
+
+    async def post_account_watchlist(
+        self,
+        session_id: str,
+        account_id: int,
+        media_type: str,
+        media_id: int,
+        watchlist: bool = True,
+        api_key: str | None = None,
+    ) -> bool:
+        """Add or remove a title from TMDb account watchlist."""
+        auth_headers, auth_params = self._get_tmdb_auth(api_key)
+        url = f"{TMDB_BASE_URL}/account/{account_id}/watchlist"
+        params = {"session_id": session_id, **auth_params}
+        payload = {
+            "media_type": media_type,
+            "media_id": media_id,
+            "watchlist": watchlist,
+        }
+        res = await self._post_json(url, json_data=payload, params=params, headers=auth_headers)
+        return bool(res and res.get("success"))
 
     async def enrich_movie(self, movie: Movie, api_key: str | None = None) -> Movie:
         """Enrich movie details using TMDb or free fallback."""

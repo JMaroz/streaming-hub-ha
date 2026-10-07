@@ -184,6 +184,7 @@
     castIconPlay: document.getElementById("cast-icon-play"),
     castIconPause: document.getElementById("cast-icon-pause"),
     castBarSeekForward: document.getElementById("cast-bar-seek-forward"),
+    castBarNextEp: document.getElementById("cast-bar-next-ep"),
     castBarCurTime: document.getElementById("cast-bar-cur-time"),
     castBarSlider: document.getElementById("cast-bar-slider"),
     castBarSliderFill: document.getElementById("cast-bar-slider-fill"),
@@ -204,6 +205,17 @@
     btnToggleKeyVisibility: document.getElementById("btn-toggle-key-visibility"),
     btnValidateTmdb: document.getElementById("btn-validate-tmdb"),
     tmdbValidationResult: document.getElementById("tmdb-validation-result"),
+    btnSyncCatalog: document.getElementById("btn-sync-catalog"),
+    catalogSyncResult: document.getElementById("catalog-sync-result"),
+    tmdbAccountBadge: document.getElementById("tmdb-account-badge"),
+    tmdbAccountConnectedBox: document.getElementById("tmdb-account-connected-box"),
+    tmdbAccountLoginBox: document.getElementById("tmdb-account-login-box"),
+    tmdbAccountUsername: document.getElementById("tmdb-account-username"),
+    btnTmdbLogin: document.getElementById("btn-tmdb-login"),
+    btnTmdbCompleteLogin: document.getElementById("btn-tmdb-complete-login"),
+    btnTmdbSyncAccount: document.getElementById("btn-tmdb-sync-account"),
+    btnTmdbDisconnect: document.getElementById("btn-tmdb-disconnect"),
+    tmdbAccountResult: document.getElementById("tmdb-account-result"),
   };
 
   // Helper: Format base API URL respecting Ingress
@@ -467,6 +479,12 @@
       elements.btnRestartTrigger.addEventListener("click", () => {
         state.resumeProgress = null;
         elements.btnRestartTrigger.classList.add("hidden");
+        const isTv = state.selectedItem && (state.selectedItem.type === "tv" || !!state.selectedItem.seasons);
+        if (isTv && state.selectedItem.seasons && state.selectedItem.seasons.length > 0) {
+          const firstSeason = state.selectedItem.seasons[0];
+          state.selectedSeason = firstSeason.number;
+          renderSeasons(state.selectedItem.seasons, 1, 1);
+        }
         updatePlayButtonText();
         handlePlayAction();
       });
@@ -549,6 +567,36 @@
       });
     }
 
+    if (elements.btnSyncCatalog) {
+      elements.btnSyncCatalog.addEventListener("click", () => {
+        syncCatalogNow();
+      });
+    }
+
+    if (elements.btnTmdbLogin) {
+      elements.btnTmdbLogin.addEventListener("click", () => {
+        startTmdbAuth();
+      });
+    }
+
+    if (elements.btnTmdbCompleteLogin) {
+      elements.btnTmdbCompleteLogin.addEventListener("click", () => {
+        completeTmdbAuth();
+      });
+    }
+
+    if (elements.btnTmdbSyncAccount) {
+      elements.btnTmdbSyncAccount.addEventListener("click", () => {
+        syncTmdbAccount();
+      });
+    }
+
+    if (elements.btnTmdbDisconnect) {
+      elements.btnTmdbDisconnect.addEventListener("click", () => {
+        disconnectTmdbAccount();
+      });
+    }
+
     // Cast Control Bar Listeners
     if (elements.castBarPlayPause) {
       elements.castBarPlayPause.addEventListener("click", toggleCastPlayPause);
@@ -558,6 +606,9 @@
     }
     if (elements.castBarSeekForward) {
       elements.castBarSeekForward.addEventListener("click", () => seekCastRelative(30));
+    }
+    if (elements.castBarNextEp) {
+      elements.castBarNextEp.addEventListener("click", () => playPendingCastNextEpisode());
     }
     if (elements.castBarSlider) {
       elements.castBarSlider.addEventListener("input", handleCastSliderInput);
@@ -727,13 +778,22 @@
   }
 
   // Settings & TMDb Validation Modal Functions
+  let tmdbPendingRequestToken = null;
+
   async function openSettingsModal() {
     if (!elements.settingsModal) return;
     elements.settingsModal.classList.remove("hidden");
     if (elements.tmdbValidationResult) {
       elements.tmdbValidationResult.classList.add("hidden");
     }
+    if (elements.catalogSyncResult) {
+      elements.catalogSyncResult.classList.add("hidden");
+    }
+    if (elements.tmdbAccountResult) {
+      elements.tmdbAccountResult.classList.add("hidden");
+    }
     await checkTmdbStatus();
+    await checkTmdbAccountStatus();
   }
 
   function closeSettingsModal() {
@@ -818,6 +878,192 @@
     elements.tmdbValidationResult.textContent = message;
     elements.tmdbValidationResult.className = `validation-result-msg ${success ? "success" : "error"}`;
     elements.tmdbValidationResult.classList.remove("hidden");
+  }
+
+  async function checkTmdbAccountStatus() {
+    if (!elements.tmdbAccountBadge) return;
+    try {
+      const resp = await fetch(apiUrl(`api/tmdb/account/status?profile_id=${encodeURIComponent(state.activeProfileId)}`));
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.connected && data.username) {
+          elements.tmdbAccountBadge.textContent = "COLLEGATO";
+          elements.tmdbAccountBadge.className = "badge badge-status-valid";
+          if (elements.tmdbAccountUsername) {
+            elements.tmdbAccountUsername.textContent = `👤 Connesso come: ${data.username}`;
+          }
+          if (elements.tmdbAccountConnectedBox) elements.tmdbAccountConnectedBox.classList.remove("hidden");
+          if (elements.tmdbAccountLoginBox) elements.tmdbAccountLoginBox.classList.add("hidden");
+        } else {
+          elements.tmdbAccountBadge.textContent = "NON COLLEGATO";
+          elements.tmdbAccountBadge.className = "badge badge-status-missing";
+          if (elements.tmdbAccountConnectedBox) elements.tmdbAccountConnectedBox.classList.add("hidden");
+          if (elements.tmdbAccountLoginBox) elements.tmdbAccountLoginBox.classList.remove("hidden");
+          if (elements.btnTmdbLogin) elements.btnTmdbLogin.classList.remove("hidden");
+          if (elements.btnTmdbCompleteLogin) elements.btnTmdbCompleteLogin.classList.add("hidden");
+        }
+      }
+    } catch (err) {
+      console.warn("Error checking TMDb account status:", err);
+    }
+  }
+
+  async function syncCatalogNow() {
+    if (!elements.btnSyncCatalog) return;
+    elements.btnSyncCatalog.disabled = true;
+    const originalText = elements.btnSyncCatalog.innerHTML;
+    elements.btnSyncCatalog.innerHTML = `<span class="btn-text">⏳ Sincronizzazione in corso...</span>`;
+    showCatalogSyncResult(true, "Scansione ed arricchimento del catalogo in corso...");
+
+    try {
+      const resp = await fetch(apiUrl("api/metadata/sync-catalog?limit=50"), {
+        method: "POST",
+      });
+      const data = await resp.json();
+      if (resp.ok && data.status === "ok") {
+        showCatalogSyncResult(true, data.message || "Catalogo sincronizzato con successo!");
+        showToast("Sincronizzazione catalogo completata con successo! 🎬", "success");
+        loadCatalog(false);
+      } else {
+        showCatalogSyncResult(false, data.detail || data.message || "Errore durante la sincronizzazione.");
+      }
+    } catch (err) {
+      console.error("Error syncing catalog:", err);
+      showCatalogSyncResult(false, "Errore di connessione durante la sincronizzazione.");
+    } finally {
+      elements.btnSyncCatalog.disabled = false;
+      elements.btnSyncCatalog.innerHTML = originalText;
+    }
+  }
+
+  function showCatalogSyncResult(success, message) {
+    if (!elements.catalogSyncResult) return;
+    elements.catalogSyncResult.textContent = message;
+    elements.catalogSyncResult.className = `validation-result-msg ${success ? "success" : "error"}`;
+    elements.catalogSyncResult.classList.remove("hidden");
+  }
+
+  async function startTmdbAuth() {
+    if (!elements.btnTmdbLogin) return;
+    elements.btnTmdbLogin.disabled = true;
+    showTmdbAccountResult(true, "Richiesta token di autenticazione a TMDb...");
+
+    try {
+      const resp = await fetch(apiUrl(`api/tmdb/auth/request-token?profile_id=${encodeURIComponent(state.activeProfileId)}`), {
+        method: "POST",
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success && data.request_token && data.auth_url) {
+        tmdbPendingRequestToken = data.request_token;
+        window.open(data.auth_url, "_blank");
+        if (elements.btnTmdbLogin) elements.btnTmdbLogin.classList.add("hidden");
+        if (elements.btnTmdbCompleteLogin) elements.btnTmdbCompleteLogin.classList.remove("hidden");
+        showTmdbAccountResult(
+          true,
+          "Pagina di autorizzazione TMDb aperta in una nuova scheda. Accedi, approva Streaming Hub e poi clicca sul pulsante verde qui sotto."
+        );
+      } else {
+        showTmdbAccountResult(false, data.detail || "Impossibile avviare l'autenticazione con TMDb.");
+      }
+    } catch (err) {
+      console.error("Error starting TMDb auth:", err);
+      showTmdbAccountResult(false, "Errore di connessione durante la richiesta token TMDb.");
+    } finally {
+      elements.btnTmdbLogin.disabled = false;
+    }
+  }
+
+  async function completeTmdbAuth() {
+    if (!tmdbPendingRequestToken || !elements.btnTmdbCompleteLogin) return;
+    elements.btnTmdbCompleteLogin.disabled = true;
+    showTmdbAccountResult(true, "Verifica sessione in corso...");
+
+    try {
+      const resp = await fetch(apiUrl("api/tmdb/auth/session"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          request_token: tmdbPendingRequestToken,
+          profile_id: state.activeProfileId,
+        }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        showToast(`Account TMDb collegato con successo! Benvenuto ${data.username}`, "success");
+        showTmdbAccountResult(true, `Connesso con successo come ${data.username}!`);
+        tmdbPendingRequestToken = null;
+        await checkTmdbAccountStatus();
+      } else {
+        showTmdbAccountResult(
+          false,
+          data.detail || "Autorizzazione non completata. Verifica di aver cliccato 'Approva' su themoviedb.org e riprova."
+        );
+      }
+    } catch (err) {
+      console.error("Error completing TMDb auth:", err);
+      showTmdbAccountResult(false, "Errore di connessione durante il completamento.");
+    } finally {
+      elements.btnTmdbCompleteLogin.disabled = false;
+    }
+  }
+
+  async function disconnectTmdbAccount() {
+    if (!elements.btnTmdbDisconnect) return;
+    if (!confirm("Sei sicuro di voler scollegare l'account TMDb da questo profilo?")) return;
+
+    try {
+      const resp = await fetch(apiUrl(`api/tmdb/auth/session?profile_id=${encodeURIComponent(state.activeProfileId)}`), {
+        method: "DELETE",
+      });
+      if (resp.ok) {
+        showToast("Account TMDb scollegato dal profilo.", "info");
+        showTmdbAccountResult(true, "Account TMDb scollegato.");
+        await checkTmdbAccountStatus();
+      } else {
+        showToast("Errore durante la disconnessione.", "error");
+      }
+    } catch (err) {
+      console.error("Error disconnecting TMDb account:", err);
+    }
+  }
+
+  async function syncTmdbAccount() {
+    if (!elements.btnTmdbSyncAccount) return;
+    elements.btnTmdbSyncAccount.disabled = true;
+    const origText = elements.btnTmdbSyncAccount.innerHTML;
+    elements.btnTmdbSyncAccount.innerHTML = `<span class="btn-text">⏳ Sincronizzazione in corso...</span>`;
+    showTmdbAccountResult(true, "Sincronizzazione Watchlist e Preferiti con TMDb in corso...");
+
+    try {
+      const resp = await fetch(apiUrl("api/tmdb/account/sync"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile_id: state.activeProfileId }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.status === "ok") {
+        showTmdbAccountResult(true, data.message);
+        showToast("Watchlist e Preferiti TMDb sincronizzati! ⭐", "success");
+        if (state.activeTab === "home") {
+          loadFavorites();
+        }
+      } else {
+        showTmdbAccountResult(false, data.detail || data.message || "Errore sincronizzazione account.");
+      }
+    } catch (err) {
+      console.error("Error syncing TMDb account:", err);
+      showTmdbAccountResult(false, "Errore di connessione durante la sincronizzazione account.");
+    } finally {
+      elements.btnTmdbSyncAccount.disabled = false;
+      elements.btnTmdbSyncAccount.innerHTML = origText;
+    }
+  }
+
+  function showTmdbAccountResult(success, message) {
+    if (!elements.tmdbAccountResult) return;
+    elements.tmdbAccountResult.textContent = message;
+    elements.tmdbAccountResult.className = `validation-result-msg ${success ? "success" : "error"}`;
+    elements.tmdbAccountResult.classList.remove("hidden");
   }
 
   async function selectProfile(profileId, force = false) {
@@ -1132,29 +1378,18 @@
     }
 
     try {
+      let homePromise = null;
       if (isHome && page === 1 && !append) {
-        // Load Home Thematic Carousels in background
-        fetch(
+        // Load Home Thematic Carousels concurrently
+        homePromise = fetch(
           apiUrl(
             `api/catalog/home?source=${state.activeSource}&profile_id=${encodeURIComponent(state.activeProfileId)}`
           )
         )
           .then((r) => (r.ok ? r.json() : null))
-          .then((homeData) => {
-            if (homeData && homeData.carousels && homeData.carousels.length > 0) {
-              renderHomeCarousels(homeData.carousels);
-              if (homeData.hero) {
-                updateHero(homeData.hero);
-              }
-            } else if (elements.homeCarouselsSection) {
-              elements.homeCarouselsSection.classList.add("hidden");
-            }
-          })
           .catch((homeErr) => {
             console.warn("Could not load home carousels:", homeErr);
-            if (elements.homeCarouselsSection) {
-              elements.homeCarouselsSection.classList.add("hidden");
-            }
+            return null;
           });
       } else if (elements.homeCarouselsSection) {
         elements.homeCarouselsSection.classList.add("hidden");
@@ -1181,9 +1416,22 @@
       } else {
         state.catalogItems = results;
         renderGrid(state.catalogItems);
-        if (isHome && state.catalogItems.length > 0) {
-          if (!elements.heroSection || elements.heroSection.classList.contains("hidden")) {
-            updateHero(state.catalogItems[0]);
+        if (isHome) {
+          const homeData = homePromise ? await homePromise : null;
+          if (homeData && homeData.carousels && homeData.carousels.length > 0) {
+            renderHomeCarousels(homeData.carousels);
+            if (homeData.hero) {
+              updateHero(homeData.hero);
+            } else if (state.catalogItems.length > 0) {
+              updateHero(state.catalogItems[0]);
+            }
+          } else {
+            if (elements.homeCarouselsSection) elements.homeCarouselsSection.classList.add("hidden");
+            if (state.catalogItems.length > 0) {
+              updateHero(state.catalogItems[0]);
+            } else {
+              elements.heroSection.classList.add("hidden");
+            }
           }
         } else {
           elements.heroSection.classList.add("hidden");
@@ -1595,10 +1843,10 @@
     elements.heroBackdrop.style.backgroundImage = `url("${backdrop}")`;
     const isTv = item.type === "tv" || !!item.seasons;
     elements.heroType.textContent = isTv ? "Serie TV" : "Film";
-    elements.heroRating.textContent = item.rating ? `★ ${item.rating}` : "★ 7.5";
-    elements.heroYear.textContent = item.year || "2026";
-    elements.heroTitle.textContent = item.title;
-    elements.heroDescription.textContent = item.description || "Nessuna descrizione disponibile.";
+    elements.heroRating.textContent = item.rating ? `★ ${item.rating}` : "";
+    elements.heroYear.textContent = item.year ? String(item.year) : "";
+    elements.heroTitle.textContent = getDisplayTitle(item);
+    elements.heroDescription.textContent = item.description || "";
 
     elements.heroPlayBtn.onclick = () => openDetails(item);
     elements.heroInfoBtn.onclick = () => openDetails(item);
@@ -1943,8 +2191,27 @@
     elements.continueRow.appendChild(fragment);
   }
 
+  // Clear Details Modal DOM state to avoid ghosting previous titles
+  function resetDetailsModal() {
+    if (elements.modalCastSection) elements.modalCastSection.classList.add("hidden");
+    if (elements.modalCastText) elements.modalCastText.textContent = "";
+    if (elements.modalWatchProviders) elements.modalWatchProviders.classList.add("hidden");
+    if (elements.providersList) elements.providersList.innerHTML = "";
+    if (elements.tvSeriesSection) elements.tvSeriesSection.classList.add("hidden");
+    if (elements.seasonsTabs) elements.seasonsTabs.innerHTML = "";
+    if (elements.episodesList) elements.episodesList.innerHTML = "";
+    if (elements.sourcesSection) elements.sourcesSection.classList.add("hidden");
+    if (elements.sourceSelect) elements.sourceSelect.innerHTML = "";
+    if (elements.modalUpdateChip) elements.modalUpdateChip.classList.add("hidden");
+    if (elements.modalGenres) elements.modalGenres.innerHTML = "";
+    if (elements.modalPoster) elements.modalPoster.src = "";
+    if (elements.modalBackdropImg) elements.modalBackdropImg.style.backgroundImage = "";
+    if (elements.detailsModal) elements.detailsModal.scrollTop = 0;
+  }
+
   // Open Details Modal
   async function openDetails(item, targetSeason = null, targetEpisode = null) {
+    resetDetailsModal();
     const itemId = item ? (item.id || item.title_id) : null;
     const itemType = item ? (item.type || item.media_type) : null;
     const normalizedItem = item ? { ...item, id: itemId, type: itemType } : null;
@@ -2392,6 +2659,22 @@
       }
     }
     const resumeTimeStr = hasResume ? `da ${formatTime(state.resumeProgress.progress_seconds)}` : "";
+
+    const isCompleted = isTv && state.resumeProgress && state.resumeProgress.is_completed;
+    if (isCompleted) {
+      if (elements.btnRestartTrigger) {
+        elements.btnRestartTrigger.classList.remove("hidden");
+        elements.btnRestartTrigger.title = "Ricomincia serie da S1E1";
+      }
+      if (state.selectedDevice === "browser") {
+        elements.btnPlayText.textContent = `✓ Serie Completata`;
+      } else {
+        const dev = state.mediaPlayers.find((p) => p.entity_id === state.selectedDevice);
+        const name = dev ? formatDeviceName(dev.entity_id, dev.name) : "Dispositivo Cast";
+        elements.btnPlayText.textContent = `✓ Serie Completata (${name})`;
+      }
+      return;
+    }
 
     if (elements.btnRestartTrigger) {
       elements.btnRestartTrigger.classList.toggle("hidden", !hasResume);
@@ -2907,6 +3190,9 @@
     if (elements.castNextEpisodeBanner) {
       elements.castNextEpisodeBanner.classList.add("hidden");
     }
+    if (elements.castBarNextEp) {
+      elements.castBarNextEp.classList.add("hidden");
+    }
   }
 
   function inspectSubtitleTrackCues(textTrack) {
@@ -3162,15 +3448,24 @@
         if (nextData && nextData.has_next && nextData.next) {
           castNextEpState.data = nextData.next;
           castNextEpState.ready = true;
+          if (elements.castBarNextEp) {
+            elements.castBarNextEp.classList.remove("hidden");
+          }
           console.log(`[StreamingHub Cast] Next episode ready: S${nextData.next.season_number}:E${nextData.next.episode_number}`);
         } else {
           castNextEpState.data = null;
           castNextEpState.ready = false;
+          if (elements.castBarNextEp) {
+            elements.castBarNextEp.classList.add("hidden");
+          }
           console.log(`[StreamingHub Cast] No next episode available.`);
         }
       } else {
         castNextEpState.data = null;
         castNextEpState.ready = false;
+        if (elements.castBarNextEp) {
+          elements.castBarNextEp.classList.add("hidden");
+        }
       }
 
       if (skipResp && skipResp.ok) {
@@ -3554,9 +3849,16 @@
 
       state.castSession.state = data.state || "playing";
       if (!state.castSession.isSeeking) {
-        state.castSession.position = data.media_position || state.castSession.position;
+        const sPos = Number(data.media_position) || 0;
+        if (sPos > 0) {
+          if (Math.abs(sPos - (state.castSession.position || 0)) > 1.5) {
+            state.castSession.position = sPos;
+          }
+        }
       }
-      state.castSession.duration = data.media_duration || state.castSession.duration;
+      if (data.media_duration && data.media_duration > 0) {
+        state.castSession.duration = data.media_duration;
+      }
       state.castSession.volume = data.volume_level !== undefined ? data.volume_level : 1;
       state.castSession.muted = !!data.is_volume_muted;
 

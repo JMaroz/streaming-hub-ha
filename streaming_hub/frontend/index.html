@@ -448,6 +448,12 @@
                 <text x="12" y="16" font-size="7.5" font-weight="bold" text-anchor="middle" fill="currentColor" stroke="none">30</text>
               </svg>
             </button>
+            <button id="cast-bar-next-ep" class="btn-cast-ctrl hidden" title="Prossimo Episodio">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 4 15 12 5 20 5 4"></polygon>
+                <line x1="19" y1="5" x2="19" y2="19"></line>
+              </svg>
+            </button>
           </div>
 
           <div class="cast-bar-progress-row">
@@ -532,6 +538,57 @@
               </div>
               <div id="tmdb-validation-result" class="validation-result-msg hidden"></div>
             </div>
+          </div>
+
+          <!-- Catalog Synchronization Card -->
+          <div class="settings-section-card">
+            <div class="settings-card-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="section-card-icon"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              <span>Sincronizzazione Catalogo con TMDb</span>
+            </div>
+            <p class="settings-help-text">
+              Arricchisce automaticamente i titoli presenti nel database locale con locandine ad alta definizione, sfondi 1080p, classificazione d'età (VM14/VM18), cast e disponibilità sulle piattaforme JustWatch.
+            </p>
+            <div class="sync-actions-box">
+              <button id="btn-sync-catalog" class="btn btn-secondary">
+                <span class="btn-text">🔄 Sincronizza Catalogo Ora</span>
+              </button>
+              <div id="catalog-sync-result" class="validation-result-msg hidden"></div>
+            </div>
+          </div>
+
+          <!-- Personal TMDb Account Card -->
+          <div class="settings-section-card">
+            <div class="settings-card-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="section-card-icon"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+              <span>Account Personale TMDb</span>
+              <span id="tmdb-account-badge" class="badge badge-status-unknown">Non collegato</span>
+            </div>
+            <p class="settings-help-text">
+              Collega il tuo account utente The Movie Database per sincronizzare bidirezionalmente i tuoi Preferiti e la tua Watchlist personale con il profilo attivo.
+            </p>
+            <div id="tmdb-account-connected-box" class="hidden">
+              <div class="tmdb-user-info">
+                <span id="tmdb-account-username" class="tmdb-username-label"></span>
+              </div>
+              <div class="tmdb-account-buttons">
+                <button id="btn-tmdb-sync-account" class="btn btn-primary">
+                  <span class="btn-text">🔄 Sincronizza Preferiti &amp; Watchlist</span>
+                </button>
+                <button id="btn-tmdb-disconnect" class="btn btn-danger-subtle">Disconnetti</button>
+              </div>
+            </div>
+            <div id="tmdb-account-login-box">
+              <div class="tmdb-account-buttons">
+                <button id="btn-tmdb-login" class="btn btn-secondary">
+                  <span class="btn-text">🔑 Accedi con TMDb</span>
+                </button>
+                <button id="btn-tmdb-complete-login" class="btn btn-primary hidden">
+                  <span class="btn-text">✓ Ho Autorizzato, Completa Connessione</span>
+                </button>
+              </div>
+            </div>
+            <div id="tmdb-account-result" class="validation-result-msg hidden"></div>
           </div>
         </div>
       </div>

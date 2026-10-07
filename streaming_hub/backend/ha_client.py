@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import logging
 import os
 from typing import Any
@@ -264,6 +265,7 @@ class HACoreClient:
         extra_dict: dict[str, Any] = {
             "title": title,
             "thumb": poster_url,
+            "stream_type": "BUFFERED",
         }
         if subtitles:
             tracks = []
@@ -596,9 +598,23 @@ class HACoreClient:
                         has_started_playing = True
                     pos = attrs.get("media_position")
                     dur = attrs.get("media_duration")
-                    if pos is not None and float(pos) > 0:
-                        pos_float = float(pos)
-                        dur_float = float(dur or 0)
+                    updated_at_str = attrs.get("media_position_updated_at")
+                    pos_float = float(pos or 0.0)
+                    dur_float = float(dur or 0.0)
+                    if state == "playing" and updated_at_str:
+                        try:
+                            clean_updated = str(updated_at_str).replace("Z", "+00:00")
+                            updated_dt = datetime.fromisoformat(clean_updated)
+                            now_dt = datetime.now(UTC)
+                            elapsed = (now_dt - updated_dt).total_seconds()
+                            if 0 < elapsed < 86400:
+                                pos_float += elapsed
+                        except Exception:
+                            pass
+                    if dur_float > 0 and pos_float > dur_float:
+                        pos_float = dur_float
+
+                    if pos_float > 0:
                         await db.save_watch_progress(
                             media_id=media_id,
                             title=title,
@@ -699,6 +715,23 @@ class HACoreClient:
         else:
             friendly_device_name = raw_device_name
 
+        raw_pos = float(attrs.get("media_position") or 0.0)
+        updated_at_str = attrs.get("media_position_updated_at")
+        if state == "playing" and updated_at_str:
+            try:
+                clean_updated = str(updated_at_str).replace("Z", "+00:00")
+                updated_dt = datetime.fromisoformat(clean_updated)
+                now_dt = datetime.now(UTC)
+                elapsed = (now_dt - updated_dt).total_seconds()
+                if 0 < elapsed < 86400:
+                    raw_pos += elapsed
+            except Exception:
+                pass
+
+        media_dur = float(attrs.get("media_duration") or 0.0)
+        if media_dur > 0 and raw_pos > media_dur:
+            raw_pos = media_dur
+
         return {
             "active": is_active,
             "entity_id": target_id,
@@ -710,9 +743,9 @@ class HACoreClient:
             "poster_url": session_info.get("poster_url") or attrs.get("entity_picture"),
             "season_number": session_info.get("season_number"),
             "episode_number": session_info.get("episode_number"),
-            "media_position": float(attrs.get("media_position") or 0.0),
-            "media_position_updated_at": attrs.get("media_position_updated_at"),
-            "media_duration": float(attrs.get("media_duration") or 0.0),
+            "media_position": round(raw_pos, 1),
+            "media_position_updated_at": updated_at_str,
+            "media_duration": media_dur,
             "volume_level": float(attrs.get("volume_level") or 1.0),
             "is_volume_muted": bool(attrs.get("is_volume_muted", False)),
         }

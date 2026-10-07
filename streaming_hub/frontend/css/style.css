@@ -2624,6 +2624,47 @@ body.cast-active {
   border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
+.settings-section-card + .settings-section-card {
+  margin-top: 16px;
+}
+
+.sync-actions-box,
+.tmdb-account-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.tmdb-user-info {
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tmdb-username-label {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--primary-light);
+}
+
+.btn-danger-subtle {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 0.84rem;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-danger-subtle:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
 /* Subtitle and Audio Controls */
 .player-header-actions {
   display: flex;

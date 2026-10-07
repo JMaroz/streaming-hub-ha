@@ -142,6 +142,15 @@ class StreamProxy:
                 proxy_uri = f"{prefix}/{endpoint}/{token}?url={urllib.parse.quote(abs_uri, safe='')}"
                 rewritten.append(proxy_uri)
 
+        has_extinf = any(l.startswith("#EXTINF") for l in lines)
+        has_playlist_type = any(l.startswith("#EXT-X-PLAYLIST-TYPE") for l in lines)
+        has_endlist = any(l.startswith("#EXT-X-ENDLIST") for l in lines)
+        if has_extinf and has_endlist and not has_playlist_type:
+            for idx, r_line in enumerate(rewritten):
+                if r_line.strip().startswith("#EXTM3U"):
+                    rewritten.insert(idx + 1, "#EXT-X-PLAYLIST-TYPE:VOD")
+                    break
+
         return "\n".join(rewritten)
 
     async def get_stream_response(
