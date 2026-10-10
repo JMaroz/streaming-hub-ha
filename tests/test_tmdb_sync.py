@@ -10,7 +10,7 @@ import pytest
 
 from streaming_hub.backend.database import MediaDatabase
 from streaming_hub.backend.metadata import MetadataEnricher
-from streaming_hub.backend.models import Movie, TvSeries
+from streaming_hub.backend.models import Movie
 
 
 class TestTmdbSync:

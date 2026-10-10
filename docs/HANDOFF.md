@@ -10,26 +10,29 @@
 - Enforced strict trigger rules (no arbitrary percentage triggers):
   - Triggers on end-credits metadata (`outro.start`) via SkipDB when available, skipping the rest of the credits at countdown expiry (Netflix-style).
   - Triggers on playback completion (`idle` state after playing) when end-credits metadata is absent.
-- Fixed a bug in `castToDevice` where explicit season/episode parameters were overridden by the global UI selection state.
+- Fixed a bug in `castToDevice` where explicit season/episode parameters were overridden by the global UI selection state (`state.selectedItem = null` upon modal close), causing autoplay to register episode IDs (e.g. `sc-13083_s1e9`) as standalone "movies" in watch history.
+- Added self-healing and defensive normalization in `database.py`: automatically purges and filters out spurious movie records with episode IDs and normalizes incoming `media_id` into canonical series IDs.
 - Fixed a pre-existing integer parsing error in `metadata.py` for runtimes returned as strings (e.g. `'148 min'`).
-- Added full unit test coverage in `tests/test_cast_next_episode.py`. All 98 tests in the project pass with 0 regressions.
+- Added full unit test coverage in `tests/test_cast_next_episode.py`. All tests in the project pass with 0 regressions.
 
 ## Relevant Files
+- `streaming_hub/backend/database.py`: Normalization of episode-specific `media_id` in `_save_watch_progress_sync`, auto-healing purge of legacy corrupted movie entries in `_migrate_and_heal_sync`, and defensive filtering in `_get_continue_watching_sync`.
 - `streaming_hub/backend/ha_client.py`: Server-side countdown worker (`_run_next_episode_countdown`), prefetching (`_prepare_next_episode`), actionable notification dispatch (`send_next_episode_notification`), WebSocket event listener (`mobile_app_notification_action`), and outro/idle trigger handling in playback tracker.
-- `streaming_hub/backend/main.py`: Connected next episode fetcher, skip segments fetcher, and autoplay transition handler; added `POST /api/cast/next-episode/action` and event listener lifecycle hooks.
-- `streaming_hub/backend/metadata.py`: Robust runtime parsing handling strings with unit suffixes.
+- `streaming_hub/backend/main.py`: Connected next episode fetcher, skip segments fetcher, and autoplay transition handler; defensive normalization of `media_id` and title in `/api/cast`; added `POST /api/cast/next-episode/action` and event listener lifecycle hooks.
 - `streaming_hub/frontend/js/app.js`: Real-time banner countdown synchronization with server, action dispatches, and explicit options handling in `castToDevice`.
-- `tests/test_cast_next_episode.py`: 10 comprehensive unit tests for metadata prefetching, outro triggers, idle fallback triggers, notification dispatch, action handling, and API endpoint delegation.
+- `tests/test_cast_next_episode.py`: Comprehensive unit tests for metadata prefetching, countdown, action handling, and watch history progress normalization.
 - `docs/plans/2026-10-10_cast_next_episode_autoplay.md`: Plan checklist fully completed.
 
 ## Next Steps
 - Verify on live Home Assistant setup with physical Cast device (Philips TV `media_player.tpm191e`).
 - Suggested Conventional Commit:
   ```bash
-  git add streaming_hub/backend/ha_client.py streaming_hub/backend/main.py streaming_hub/backend/metadata.py streaming_hub/frontend/js/app.js tests/test_cast_next_episode.py docs/plans/2026-10-10_cast_next_episode_autoplay.md docs/HANDOFF.md
-  git commit -m "feat(cast): server-side next episode autoplay with actionable notifications"
+  git add streaming_hub/backend/database.py streaming_hub/backend/proxy.py tests/test_cast_next_episode.py tests/test_tmdb_sync.py docs/HANDOFF.md
+  git commit -m "fix(cast): normalize watch history media id and purge duplicate continue watching items"
   ```
 
 ## Useful Commands
 - Run Cast next episode tests: `.venv/bin/pytest tests/test_cast_next_episode.py -v`
 - Run full test suite: `.venv/bin/pytest`
+- Run linting: `.venv/bin/ruff check .`
+

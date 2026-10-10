@@ -304,6 +304,9 @@ class MediaDatabase:
                     "UPDATE watch_history SET title = ?, poster_url = ? WHERE id = ?",
                     (new_title, new_poster, hist_id),
                 )
+
+            # 4. Clean up corrupted / spurious episode records erroneously stored as movies
+            conn.execute("DELETE FROM watch_history WHERE media_type = 'movie' AND media_id GLOB '*_s[0-9]*e[0-9]*';")
             _LOGGER.debug("Database migration and auto-healing completed successfully")
         except Exception as err:
             _LOGGER.warning("Database auto-healing error (non-fatal): %s", err)
@@ -878,6 +881,17 @@ class MediaDatabase:
         profile_id: str,
     ) -> None:
         """Synchronously upsert watch history."""
+        # Defensive normalization: if media_id is an episode-specific identifier (e.g., sc-13083_s1e9)
+        if media_id and "_s" in media_id:
+            ep_match = re.search(r"^(.*)_s(\d+)e(\d+)$", media_id, re.IGNORECASE)
+            if ep_match:
+                media_id = ep_match.group(1)
+                media_type = "tv"
+                if season_number is None:
+                    season_number = int(ep_match.group(2))
+                if episode_number is None:
+                    episode_number = int(ep_match.group(3))
+
         base_id = f"{media_id}_s{season_number}e{episode_number}" if season_number and episode_number else media_id
         hist_id = f"{profile_id}:{base_id}"
         effective_title = title
@@ -1007,6 +1021,8 @@ class MediaDatabase:
                 backdrop = r.get("backdrop_url")
 
                 if media_type == "movie":
+                    if "_s" in r["media_id"] and any(c.isdigit() for c in r["media_id"]):
+                        continue
                     if progress < 15:
                         continue
                     if percent >= 90 or (duration > 300 and (duration - progress) < 180):

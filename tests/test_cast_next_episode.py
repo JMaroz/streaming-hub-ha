@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 import tempfile
 from unittest.mock import AsyncMock
@@ -30,7 +29,6 @@ async def test_watch_history_normalization_prevents_duplicate_card(temp_db):
     series = TvSeries(
         id="sc-13083",
         title="Lo straordinario mondo di Gumball",
-        media_type="tv",
         seasons=[
             TvSeason(
                 number=1,
