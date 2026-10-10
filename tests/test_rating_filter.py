@@ -86,10 +86,88 @@ class TestRatingFilter:
             Movie(id="s5", title="Harry Potter e la Pietra Filosofale", genres=["Avventura", "Fantasy", "Famiglia"]),
         ]
         for item in safe_items:
-            if True:
-                assert is_title_allowed_for_profile(item, self.profile_t)
-                assert is_title_allowed_for_profile(item, self.profile_6)
-                assert is_title_allowed_for_profile(item, self.profile_14)
+            assert is_title_allowed_for_profile(item, self.profile_t)
+            assert is_title_allowed_for_profile(item, self.profile_6)
+            assert is_title_allowed_for_profile(item, self.profile_14)
+
+    def test_paw_patrol_and_super_mario_allowed_on_kids_profiles(self) -> None:
+        """Test that PAW Patrol: Missione Natale and Super Mario Galaxy are allowed on T and 6+ profiles."""
+        # Paw Patrol with mystery plot and uncertified or T cert
+        paw_patrol = Movie(
+            id="paw-xmas",
+            title="PAW Patrol: Missione Natale",
+            genres=["Animazione", "Famiglia", "Avventura"],
+            description="Babbo Natale si ammala e Rubble deve svelare il mistero per salvare i regali dal sindaco Humdinger.",
+            certification=None,
+        )
+        assert is_title_allowed_for_profile(paw_patrol, self.profile_t)
+        assert is_title_allowed_for_profile(paw_patrol, self.profile_6)
+
+        # Super Mario Galaxy with space conflict plot and PG certification
+        mario_galaxy = Movie(
+            id="mario-galaxy",
+            title="The Super Mario Galaxy Movie",
+            genres=["Animazione", "Avventura", "Commedia", "Famiglia"],
+            description="Mario e Luigi affrontano una guerra galattica per salvare Rosalina da Bowser Jr.",
+            certification="PG",
+        )
+        assert is_title_allowed_for_profile(mario_galaxy, self.profile_t)
+        assert is_title_allowed_for_profile(mario_galaxy, self.profile_6)
+
+        # Super Mario Galaxy with uncertified status
+        mario_uncertified = Movie(
+            id="mario-galaxy-raw",
+            title="Super Mario Galaxy",
+            genres=["Animazione", "Avventura"],
+            description="Avventura spaziale contro Bowser.",
+            certification=None,
+        )
+        assert is_title_allowed_for_profile(mario_uncertified, self.profile_t)
+        assert is_title_allowed_for_profile(mario_uncertified, self.profile_6)
+
+    def test_hotel_transylvania_not_blocked_by_hot(self) -> None:
+        """Test that Hotel Transylvania is not falsely blocked by 'hot' adult keyword."""
+        hotel = Movie(
+            id="hotel-1",
+            title="Hotel Transylvania",
+            genres=["Animazione", "Commedia", "Famiglia"],
+            description="Benvenuti all'Hotel Transylvania, il sontuoso resort di Dracula per mostri.",
+            certification="PG",
+        )
+        assert is_title_allowed_for_profile(hotel, self.profile_t)
+        assert is_title_allowed_for_profile(hotel, self.profile_6)
+
+    def test_coming_of_age_and_awards_not_blocked_by_false_positives(self) -> None:
+        """Test that plots with 'diventa adulto', 'award', and 'giallo' pass on kids profiles."""
+        lion_king = Movie(
+            id="lk-1",
+            title="Il Re Leone",
+            genres=["Animazione", "Famiglia"],
+            description="Simba cresce nella savana e diventa adulto per affrontare lo zio Scar. Vincitore di Academy Awards.",
+            certification="T",
+        )
+        assert is_title_allowed_for_profile(lion_king, self.profile_t)
+        assert is_title_allowed_for_profile(lion_king, self.profile_6)
+
+        minions = Movie(
+            id="minions-1",
+            title="Minions",
+            genres=["Animazione", "Commedia", "Famiglia"],
+            description="Piccoli esseri gialli alla ricerca di un padrone malvagio.",
+            certification="PG",
+        )
+        assert is_title_allowed_for_profile(minions, self.profile_t)
+        assert is_title_allowed_for_profile(minions, self.profile_6)
+
+        zootropolis = Movie(
+            id="zoo-1",
+            title="Zootropolis",
+            genres=["Animazione", "Commedia", "Crime", "Famiglia"],
+            description="La coniglietta poliziotto Judy Hopps risolve un crimine misterioso.",
+            certification="PG",
+        )
+        assert is_title_allowed_for_profile(zootropolis, self.profile_t)
+        assert is_title_allowed_for_profile(zootropolis, self.profile_6)
 
     def test_crawler_parser_extracts_age_certification(self) -> None:
         """Test that CrawlerCatalogParser extracts age certifications from HTML and title tags."""

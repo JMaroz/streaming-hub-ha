@@ -122,7 +122,7 @@ class MetadataEnricher:
         """Search Cinemeta by title to resolve an IMDb ID."""
         clean = self._clean_title(title)
         query = quote_plus(clean)
-        url = f"{CINEMETA_BASE_URL}/catalog/{media_type}/top/search={query}.json"
+        url = f"https://v3-cinemeta.strem.io/catalog/{media_type}/top/search={query}.json"
         try:
             data = await self._get_json(url)
             if data and isinstance(data, dict):
@@ -500,19 +500,21 @@ class MetadataEnricher:
         if meta.get("runtime") and not movie.duration:
             movie.duration = int(meta["runtime"])
 
-        # Extract certification (Italian priority, then US, then any)
+        # Extract certification (Italian priority, then US, then any entry with valid certification)
         release_dates = meta.get("release_dates", {})
         if isinstance(release_dates, dict) and "results" in release_dates:
             results = release_dates.get("results", [])
             it_entry = next((r for r in results if r.get("iso_3166_1") == "IT"), None)
             us_entry = next((r for r in results if r.get("iso_3166_1") == "US"), None)
-            target_entry = it_entry or us_entry or (results[0] if results else None)
-            if target_entry:
-                for rd in target_entry.get("release_dates", []):
-                    cert = rd.get("certification")
+            candidates = [e for e in (it_entry, us_entry) if e] + [e for e in results if e not in (it_entry, us_entry)]
+            for entry in candidates:
+                for rd in entry.get("release_dates", []):
+                    cert = str(rd.get("certification") or "").strip()
                     if cert:
-                        movie.certification = str(cert)
+                        movie.certification = cert
                         break
+                if movie.certification:
+                    break
 
         if not movie.certification and meta.get("certification"):
             movie.certification = str(meta["certification"])
@@ -616,15 +618,18 @@ class MetadataEnricher:
             with contextlib.suppress(Exception):
                 series.rating = round(float(meta["imdbRating"]), 1)
 
-        # Extract TV content ratings (Italian priority, then US, then any)
+        # Extract TV content ratings (Italian priority, then US, then any entry with valid rating)
         content_ratings = meta.get("content_ratings", {})
         if isinstance(content_ratings, dict) and "results" in content_ratings:
             results = content_ratings.get("results", [])
             it_entry = next((r for r in results if r.get("iso_3166_1") == "IT"), None)
             us_entry = next((r for r in results if r.get("iso_3166_1") == "US"), None)
-            target = it_entry or us_entry or (results[0] if results else None)
-            if target and target.get("rating"):
-                series.certification = str(target.get("rating"))
+            candidates = [e for e in (it_entry, us_entry) if e] + [e for e in results if e not in (it_entry, us_entry)]
+            for entry in candidates:
+                rating_val = str(entry.get("rating") or "").strip()
+                if rating_val:
+                    series.certification = rating_val
+                    break
 
         if not series.certification and meta.get("certification"):
             series.certification = str(meta["certification"])

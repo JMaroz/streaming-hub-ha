@@ -16,7 +16,11 @@ RATING_MAP: dict[str, int] = {
     # Family / All audiences (0)
     "T": 0,
     "0": 0,
+    "0+": 0,
+    "+0": 0,
     "G": 0,
+    "U": 0,
+    "E": 0,
     "TV-Y": 0,
     "TV-G": 0,
     "PEGI 3": 0,
@@ -31,6 +35,7 @@ RATING_MAP: dict[str, int] = {
     "6": 6,
     "PG": 6,
     "TV-Y7": 6,
+    "TV-Y7-FV": 6,
     "TV-PG": 6,
     "PEGI 7": 6,
     "PEGI 6": 6,
@@ -92,9 +97,11 @@ ADULT_KEYWORDS: set[str] = {
     "erotica",
     "erotismo",
     "erotic",
-    "adulti",
-    "adult",
-    "adulto",
+    "film per adulti",
+    "contenuto per adulti",
+    "contenuti per adulti",
+    "solo per adulti",
+    "adult only",
     "pornografico",
     "pornografia",
     "porno",
@@ -111,7 +118,8 @@ ADULT_KEYWORDS: set[str] = {
     "xxx",
     "sesso",
     "sex",
-    "sessual",
+    "sessuale",
+    "sessuali",
     "sensuale",
     "sensual",
     "nudo",
@@ -120,7 +128,6 @@ ADULT_KEYWORDS: set[str] = {
     "nudità",
     "luce rossa",
     "a luci rosse",
-    "hard",
     "orgia",
     "orgie",
     "orgy",
@@ -128,7 +135,6 @@ ADULT_KEYWORDS: set[str] = {
     "scambist",
     "eroguro",
     "ecchi",
-    "hot",
     "peccato carnale",
     "tentazione proibita",
     "incesto",
@@ -137,7 +143,6 @@ ADULT_KEYWORDS: set[str] = {
     "fetish",
     "feticismo",
     "passione carnale",
-    "intimo",
     "rapporti intimi",
     "scene esplicite",
     "pellicola a luci rosse",
@@ -146,12 +151,11 @@ ADULT_KEYWORDS: set[str] = {
     "pornostar",
     "escort",
     "gigolo",
-    "strip",
     "stripper",
+    "striptease",
+    "strip club",
     "infedelta",
     "infedeltà",
-    "tradimento",
-    "provocazione",
     "intrigo erotico",
     "thriller erotico",
     "commedia erotica",
@@ -188,30 +192,23 @@ KIDS_RESTRICTED_KEYWORDS: set[str] = {
     "horror",
     "splatter",
     "gore",
-    "crime",
+    "slasher",
     "thriller",
-    "giallo",
-    "poliziesco",
-    "guerra",
-    "war",
     "psicologico",
-    "mistero",
-    "violenza",
+    "violenza estrema",
+    "strage",
+    "massacro",
+    "tortura",
+    "sadico",
+    "cannibale",
+    "snuff",
 }
 
 UNSAFE_TITLE_KEYWORDS: set[str] = {
     "resident evil",
     "unabomber",
-    "kill",
     "killer",
     "assassin",
-    "blood",
-    "dead",
-    "death",
-    "zombie",
-    "horror",
-    "morte",
-    "sangue",
     "massacro",
     "omicidio",
     "delitto",
@@ -225,9 +222,21 @@ UNSAFE_TITLE_KEYWORDS: set[str] = {
     "demon",
     "diavolo",
     "satana",
-    "evil",
     "terror",
 }
+
+ADULT_KEYWORDS_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in sorted(ADULT_KEYWORDS, key=len, reverse=True)) + r")\b",
+    flags=re.IGNORECASE,
+)
+KIDS_RESTRICTED_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in sorted(KIDS_RESTRICTED_KEYWORDS, key=len, reverse=True)) + r")\b",
+    flags=re.IGNORECASE,
+)
+UNSAFE_TITLE_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in sorted(UNSAFE_TITLE_KEYWORDS, key=len, reverse=True)) + r")\b",
+    flags=re.IGNORECASE,
+)
 
 FAMILY_FRIENDLY_KEYWORDS: set[str] = {
     "animazione",
@@ -317,6 +326,21 @@ SAFE_FAMILY_FRANCHISES: set[str] = {
     "101 dalmatians",
     "carica dei 101",
     "gli aristogatti",
+    "hotel transylvania",
+    "scooby",
+    "scooby-doo",
+    "sonic",
+    "dragon trainer",
+    "how to train your dragon",
+    "kung fu panda",
+    "garfield",
+    "puffi",
+    "smurfs",
+    "barbie",
+    "dragon ball",
+    "paddington",
+    "peter rabbit",
+    "mario galaxy",
 }
 
 
@@ -426,9 +450,14 @@ def is_title_allowed_for_profile(
         if any(ag in genres_str for ag in ADULT_GENRES):
             return False
 
-        # Check adult keywords across full metadata
-        if any(ak in combined_text for ak in ADULT_KEYWORDS):
+        # Check adult keywords across full metadata using word boundaries
+        if ADULT_KEYWORDS_PATTERN.search(combined_text):
             return False
+
+    # Check safe family franchise and family genre
+    has_safe_franchise = any(sf in title for sf in SAFE_FAMILY_FRANCHISES)
+    has_family_genre = any(fk in genres_str for fk in FAMILY_FRIENDLY_KEYWORDS) if genres else False
+    is_family_animation = ("animazione" in genres_str or "animation" in genres_str) and (has_family_genre or has_safe_franchise)
 
     # Check explicit certification if available
     if cert:
@@ -437,21 +466,27 @@ def is_title_allowed_for_profile(
             clean_digits = "".join(ch for ch in cert if ch.isdigit())
             score = int(clean_digits) if clean_digits else None
         if score is not None:
+            # Special case for Profile "T" (max_allowed == 0):
+            # In US ratings, almost all family animated movies are certified PG, TV-PG or TV-Y7 (score <= 6).
+            # If the item is a family franchise or family animation, allow it on profile "T".
+            if max_allowed == 0 and score <= 6 and (has_safe_franchise or is_family_animation or has_family_genre):
+                return True
             return score <= max_allowed
 
     # Fallback heuristic when certification is not explicitly tagged
     if max_allowed <= 6:
+        # If it's a known safe family franchise, allow it directly
+        if has_safe_franchise:
+            return True
+
         # Kids / Children profile (T or 6+ / PEGI 3 / PEGI 7)
-        if any(rk in combined_text for rk in KIDS_RESTRICTED_KEYWORDS):
+        if KIDS_RESTRICTED_PATTERN.search(combined_text):
             return False
-        if any(uk in title for uk in UNSAFE_TITLE_KEYWORDS):
+        if UNSAFE_TITLE_PATTERN.search(title):
             return False
 
-        # In the absence of classification: strictly exclude UNLESS family-friendly tag or safe title is present
-        has_family_genre = any(fk in genres_str for fk in FAMILY_FRIENDLY_KEYWORDS) if genres else False
-        has_safe_franchise = any(sf in title for sf in SAFE_FAMILY_FRANCHISES)
-
-        if not (has_family_genre or has_safe_franchise):
+        # In the absence of classification: strictly exclude UNLESS family-friendly tag is present
+        if not has_family_genre:
             return False
 
     elif max_allowed <= 14:
