@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import random
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -283,10 +284,12 @@ async def lifespan(app: FastAPI):
         CONFIG.get("stream_port"),
     )
     sync_task = asyncio.create_task(_background_sync_worker())
+    ha_client.start_event_listener()
     try:
         yield
     finally:
         _LOGGER.info("Shutting down Streaming Hub...")
+        ha_client.stop_event_listener()
         sync_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await sync_task
@@ -1785,6 +1788,17 @@ async def resolve_media_source(req: ResolveRequest, request: Request) -> dict[st
 @app.post("/api/cast")
 async def cast_to_device(req: CastRequest) -> dict[str, Any]:
     """Resolve stream and cast directly to Home Assistant media_player device."""
+    # Defensive normalization: if media_id is an episode-specific identifier (e.g., sc-13083_s1e9)
+    if req.media_id and "_s" in req.media_id:
+        match = re.search(r"^(.*)_s(\d+)e(\d+)$", req.media_id, re.IGNORECASE)
+        if match:
+            req.media_id = match.group(1)
+            req.media_type = "tv"
+            if req.season_number is None:
+                req.season_number = int(match.group(2))
+            if req.episode_number is None:
+                req.episode_number = int(match.group(3))
+
     source = ProviderSource(
         id=f"cast_{secrets_token()}",
         media_id=req.media_id or "media",
@@ -1826,20 +1840,27 @@ async def cast_to_device(req: CastRequest) -> dict[str, Any]:
 
     subtitles_list = [s.to_dict() for s in resolved.subtitles] if resolved.subtitles else None
 
-    # Resolve title and poster if missing or placeholder
+    # Resolve title and poster if missing, placeholder, or generic fallback
     resolved_title = req.title
     resolved_poster = req.poster_url
-    if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo") or not resolved_poster:
-        if req.media_id:
-            try:
-                cached_title = await db.get_title(req.media_id)
-                if cached_title:
-                    if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and cached_title.get("title") and cached_title["title"] != "Senza Titolo":
-                        resolved_title = cached_title["title"]
-                    if not resolved_poster and cached_title.get("poster_url"):
-                        resolved_poster = cached_title["poster_url"]
-            except Exception:
-                pass
+
+    cached_title_record = None
+    if req.media_id:
+        try:
+            cached_title_record = await db.get_title(req.media_id)
+        except Exception:
+            pass
+
+    if cached_title_record:
+        if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
+            resolved_title = cached_title_record.get("title")
+        elif resolved_title.startswith("Serie TV - S") and cached_title_record.get("title") and cached_title_record["title"] != "Senza Titolo":
+            ep_part = resolved_title.replace("Serie TV - ", "")
+            resolved_title = f"{cached_title_record['title']} - {ep_part}"
+
+        if not resolved_poster and cached_title_record.get("poster_url"):
+            resolved_poster = cached_title_record["poster_url"]
+
     if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
         resolved_title = slug_to_title(req.media_id or "") or "Senza Titolo"
 
@@ -2019,6 +2040,127 @@ async def get_skip_segments_endpoint(
     )
 
 
+async def _fetch_next_episode_for_cast(series_id: str, season: int, episode: int) -> dict[str, Any] | None:
+    res = await get_next_episode_endpoint(series_id, season, episode)
+    if res and res.get("has_next") and res.get("next"):
+        return res["next"]
+    return None
+
+
+async def _fetch_skip_segments_for_cast(
+    series_id: str, season: int, episode: int, duration: float | None = None
+) -> dict[str, Any]:
+    return await get_skip_segments_endpoint(series_id, season, episode, duration=duration)
+
+
+async def _play_next_cast_episode_handler(entity_id: str, session: dict[str, Any]) -> bool:
+    next_data = session.get("next_episode")
+    if not next_data or not next_data.get("episode"):
+        return False
+
+    next_ep = next_data["episode"]
+    series_id = session.get("media_id") or next_data.get("series_id")
+    season_num = next_data.get("season_number")
+    ep_num = next_data.get("episode_number")
+
+    # Ensure sources are populated
+    sources = next_ep.get("sources") or []
+    if not sources and series_id and season_num:
+        try:
+            season_obj = await source_manager.get_season(series_id, season_num)
+            if season_obj and season_obj.episodes:
+                found_ep = next((e for e in season_obj.episodes if e.episode_number == ep_num), None)
+                if found_ep and found_ep.sources:
+                    sources = [s.to_dict() for s in found_ep.sources]
+        except Exception as err:
+            _LOGGER.warning("Could not refresh sources for next episode: %s", err)
+
+    if not sources:
+        _LOGGER.warning("No sources available to play next episode S%sE%s for %s", season_num, ep_num, series_id)
+        return False
+
+    first_src_dict = sources[0]
+    source = ProviderSource.from_dict(first_src_dict)
+
+    alternate_sources = [
+        ProviderSource.from_dict(s)
+        for s in sources[1:]
+        if s.get("page_url") != source.page_url and s.get("available", True)
+    ]
+
+    try:
+        resolved = await source_manager.resolve_stream_with_fallback(
+            source,
+            alternate_sources=alternate_sources,
+            prefer_fhd=True,
+        )
+    except Exception as err:
+        _LOGGER.error("Failed to resolve stream for next episode autoplay: %s", err)
+        return False
+
+    token = stream_proxy.register_stream(resolved)
+    ha_host = await ha_client.get_host_ip_or_url()
+    stream_port = CONFIG.get("stream_port", 8099)
+    lan_stream_url = f"http://{ha_host}:{stream_port}/stream/{token}"
+
+    series_title = session.get("title", "").split(" - S")[0] or "Serie TV"
+    ep_title = next_ep.get("title") or "Episodio"
+    next_title = f"{series_title} - S{season_num}E{ep_num}: {ep_title}"
+    poster_url = next_ep.get("poster_url") or session.get("poster_url")
+
+    subtitles_list = [s.to_dict() for s in resolved.subtitles] if resolved.subtitles else None
+
+    success, actual_entity = await ha_client.play_on_device(
+        entity_id=entity_id,
+        media_url=lan_stream_url,
+        title=next_title,
+        poster_url=poster_url,
+        mime_type=resolved.mime_type or "application/vnd.apple.mpegurl",
+        subtitles=subtitles_list,
+    )
+
+    if not success:
+        _LOGGER.warning("play_on_device failed for next episode on %s", entity_id)
+        return False
+
+    asyncio.create_task(
+        ha_client.fire_ha_event(
+            "streaming_hub_playback_started",
+            {
+                "title": next_title,
+                "media_type": "tv",
+                "entity_id": actual_entity,
+                "profile_id": session.get("profile_id", "default"),
+                "season_number": season_num,
+                "episode_number": ep_num,
+            },
+        )
+    )
+
+    cast_profile = get_profile_by_id(session.get("profile_id", "default"))
+    cast_trakt = get_profile_trakt_client(cast_profile)
+
+    ha_client.start_cast_tracker(
+        entity_id=actual_entity,
+        media_id=series_id or "media",
+        title=next_title,
+        media_type="tv",
+        poster_url=poster_url,
+        season_number=season_num,
+        episode_number=ep_num,
+        db=db,
+        seek_position=0,
+        profile_id=session.get("profile_id", "default"),
+        trakt_client=cast_trakt,
+    )
+    return True
+
+
+ha_client.set_next_episode_fetcher(_fetch_next_episode_for_cast)
+ha_client.set_skip_segments_manager(_fetch_skip_segments_for_cast)
+ha_client.set_play_next_handler(_play_next_cast_episode_handler)
+
+
 @app.get("/api/subtitles/search")
 async def search_subtitles_endpoint(
     imdb_id: str | None = None,
@@ -2077,6 +2219,18 @@ async def control_cast(req: CastControlRequest) -> dict[str, Any]:
                 {"entity_id": req.entity_id},
             )
         )
+    return {"success": success}
+
+
+class CastNextEpisodeActionRequest(BaseModel):
+    entity_id: str | None = None
+    action: str = Field(..., description="'play_now' or 'cancel'")
+
+
+@app.post("/api/cast/next-episode/action")
+async def handle_next_episode_action_endpoint(req: CastNextEpisodeActionRequest) -> dict[str, Any]:
+    """Approve immediate transition or cancel next episode autoplay on Cast."""
+    success = await ha_client.handle_next_episode_action(req.entity_id, req.action.lower())
     return {"success": success}
 
 

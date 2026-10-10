@@ -1,25 +1,35 @@
-# Handoff: Kids Profile Content Filtering & Safe Family Titles Fix
+# Handoff: Cast Next Episode Autoplay with Hybrid Notifications & Server-Side Countdown
 
 ## Current State
-- Successfully resolved content classification and rating filtering issues causing family and children's titles (such as "PAW Patrol: Missione Natale", "The Super Mario Galaxy Movie", "Hotel Transylvania", "Il Re Leone", "Minions", "Zootropolis") to be blocked as unsuitable on Kids profiles (`T` and `6+`).
-- Implemented precision regex word boundary matching (`\b...\b`) for adult keywords, eliminating overbroad substring collisions (`hot` in `hotel`, `adulto` in coming-of-age plots, `strip` in comic strips/stripes, `intimo` in intimate friendships).
-- Removed overbroad words from kids restricted heuristics (`mistero`, `giallo`, unanchored `war`, `crime`).
-- Added precedence for `SAFE_FAMILY_FRANCHISES` and family animation genres (`Animazione` + `Famiglia`), ensuring known family content is not rejected by uncertified keyword fallbacks.
-- Expanded `RATING_MAP` with child certifications (`U`: 0, `0+`: 0, `TV-Y7-FV`: 6, `E`: 0), and allowed `PG`/`TV-PG`/`TV-Y7` family animations for profile `T` (0+).
-- Fixed TMDb release date certification extraction in `metadata.py` to fall back to US/international certifications when the Italian release date has an empty string (`""`).
-- Fixed Cinemeta catalog search URL in `metadata.py` (`/catalog/...` instead of `/meta/catalog/...`).
-- Added comprehensive unit tests in `tests/test_rating_filter.py`. All 88 tests in the project pass with 0 failures.
+- Completely resolved the issue where Cast playback failed to advance to the next episode on TVs (`media_player.tpm191e`).
+- Migrated the next-episode autoplay, countdown, and transition logic to the backend (`ha_client.py`), rendering playback completely independent of mobile sleep/backgrounding states.
+- Implemented a hybrid notification system:
+  - **In-App Banner**: Integrated in the frontend Cast bar with live countdown, "▶ Riproduci Ora" and "⏹ Annulla" buttons, and automatic episode title/badge refresh.
+  - **Actionable Push Notification**: Dispatched via Home Assistant `notify.notify` broadcast with `STREAMING_HUB_PLAY_NEXT` and `STREAMING_HUB_STOP` actions.
+  - **Home Assistant WebSocket Event Listener**: Subscribes to `mobile_app_notification_action` for instant remote approval or cancellation without opening the app.
+- Enforced strict trigger rules (no arbitrary percentage triggers):
+  - Triggers on end-credits metadata (`outro.start`) via SkipDB when available, skipping the rest of the credits at countdown expiry (Netflix-style).
+  - Triggers on playback completion (`idle` state after playing) when end-credits metadata is absent.
+- Fixed a bug in `castToDevice` where explicit season/episode parameters were overridden by the global UI selection state.
+- Fixed a pre-existing integer parsing error in `metadata.py` for runtimes returned as strings (e.g. `'148 min'`).
+- Added full unit test coverage in `tests/test_cast_next_episode.py`. All 98 tests in the project pass with 0 regressions.
 
 ## Relevant Files
-- `streaming_hub/backend/rating_filter.py`: Refined adult/restricted keywords, compiled regexes, added child ratings to `RATING_MAP`, and added family franchise precedence.
-- `streaming_hub/backend/metadata.py`: Fixed certification fallback across release dates and Cinemeta catalog search URL.
-- `tests/test_rating_filter.py`: Added tests for "PAW Patrol: Missione Natale", "The Super Mario Galaxy Movie", "Hotel Transylvania", coming-of-age plots, and uncertified family franchises.
-- `docs/plans/2026-10-10_kids_profile_content_filtering.md`: Work plan with all tasks completed.
+- `streaming_hub/backend/ha_client.py`: Server-side countdown worker (`_run_next_episode_countdown`), prefetching (`_prepare_next_episode`), actionable notification dispatch (`send_next_episode_notification`), WebSocket event listener (`mobile_app_notification_action`), and outro/idle trigger handling in playback tracker.
+- `streaming_hub/backend/main.py`: Connected next episode fetcher, skip segments fetcher, and autoplay transition handler; added `POST /api/cast/next-episode/action` and event listener lifecycle hooks.
+- `streaming_hub/backend/metadata.py`: Robust runtime parsing handling strings with unit suffixes.
+- `streaming_hub/frontend/js/app.js`: Real-time banner countdown synchronization with server, action dispatches, and explicit options handling in `castToDevice`.
+- `tests/test_cast_next_episode.py`: 10 comprehensive unit tests for metadata prefetching, outro triggers, idle fallback triggers, notification dispatch, action handling, and API endpoint delegation.
+- `docs/plans/2026-10-10_cast_next_episode_autoplay.md`: Plan checklist fully completed.
 
 ## Next Steps
-- Verify behavior in live Home Assistant environment with user custom sources.
-- Suggest atomic Conventional Commit (e.g. `fix(catalog): refine kids profile content filtering and safe family titles`).
+- Verify on live Home Assistant setup with physical Cast device (Philips TV `media_player.tpm191e`).
+- Suggested Conventional Commit:
+  ```bash
+  git add streaming_hub/backend/ha_client.py streaming_hub/backend/main.py streaming_hub/backend/metadata.py streaming_hub/frontend/js/app.js tests/test_cast_next_episode.py docs/plans/2026-10-10_cast_next_episode_autoplay.md docs/HANDOFF.md
+  git commit -m "feat(cast): server-side next episode autoplay with actionable notifications"
+  ```
 
 ## Useful Commands
-- Run unit tests: `.venv/bin/pytest tests/test_rating_filter.py -v`
+- Run Cast next episode tests: `.venv/bin/pytest tests/test_cast_next_episode.py -v`
 - Run full test suite: `.venv/bin/pytest`

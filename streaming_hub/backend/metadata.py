@@ -498,7 +498,8 @@ class MetadataEnricher:
                 movie.rating = round(float(meta["imdbRating"]), 1)
 
         if meta.get("runtime") and not movie.duration:
-            movie.duration = int(meta["runtime"])
+            with contextlib.suppress(Exception):
+                movie.duration = int(str(meta["runtime"]).split()[0])
 
         # Extract certification (Italian priority, then US, then any entry with valid certification)
         release_dates = meta.get("release_dates", {})

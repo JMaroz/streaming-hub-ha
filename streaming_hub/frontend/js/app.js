@@ -438,13 +438,13 @@
     // Cast Next Episode Actions
     if (elements.btnCastNextPlay) {
       elements.btnCastNextPlay.addEventListener("click", () => {
-        playPendingCastNextEpisode();
+        triggerNextEpisodeAction("play_now");
       });
     }
 
     if (elements.btnCastNextCancel) {
       elements.btnCastNextCancel.addEventListener("click", () => {
-        cancelPendingCastNextEpisode();
+        triggerNextEpisodeAction("cancel");
       });
     }
 
@@ -2733,7 +2733,13 @@
       await playInBrowser(source, title);
     } else {
       // Cast playback via Home Assistant
-      await castToDevice(source, title, state.selectedDevice);
+      await castToDevice(source, title, state.selectedDevice, {
+        isTv: isTv,
+        season: isTv ? state.selectedSeason : null,
+        episode: (isTv && state.selectedEpisode) ? state.selectedEpisode.episode_number : null,
+        mediaId: item ? item.id : null,
+        posterUrl: item ? (item.backdrop_url || item.poster_url || "") : "",
+      });
     }
   }
 
@@ -2809,12 +2815,15 @@
   }
 
   // Cast to HA Device
-  async function castToDevice(source, title, entityId) {
+  async function castToDevice(source, title, entityId, explicitOptions = {}) {
     const currentItem = state.selectedItem;
-    const isTv = currentItem && (currentItem.type === "tv" || !!currentItem.seasons);
-    const seasonNum = isTv ? state.selectedSeason : null;
-    const epNum = (isTv && state.selectedEpisode) ? state.selectedEpisode.episode_number : null;
-    const mediaId = currentItem ? currentItem.id : source.media_id;
+    const isTv = explicitOptions.isTv !== undefined ? explicitOptions.isTv : (currentItem && (currentItem.type === "tv" || !!currentItem.seasons));
+    const seasonNum = explicitOptions.season !== undefined ? explicitOptions.season : (isTv ? state.selectedSeason : null);
+    const epNum = explicitOptions.episode !== undefined ? explicitOptions.episode : ((isTv && state.selectedEpisode) ? state.selectedEpisode.episode_number : null);
+    let mediaId = explicitOptions.mediaId || (currentItem ? currentItem.id : null);
+    if (!mediaId) {
+      mediaId = (isTv && source.media_id && source.media_id.includes("_s")) ? source.media_id.split("_s")[0] : source.media_id;
+    }
     const effectiveTitle = (title && title !== "Senza Titolo") ? title : ((currentItem ? getDisplayTitle(currentItem) : "") || "Streaming Hub");
 
     let hasResume = false;
@@ -2835,7 +2844,7 @@
         resumeSec = state.resumeProgress.progress_seconds;
       }
     }
-    const posterUrl = currentItem ? (currentItem.backdrop_url || currentItem.poster_url || "") : "";
+    const posterUrl = explicitOptions.posterUrl || (currentItem ? (currentItem.backdrop_url || currentItem.poster_url || "") : "");
 
     const dev = state.mediaPlayers.find((p) => p.entity_id === entityId);
     const friendlyName = formatDeviceName(entityId, dev ? dev.name : "");
@@ -2881,7 +2890,7 @@
       showCastBar({
         entityId: actualEntity,
         deviceName: actualDevName,
-        title: title,
+        title: effectiveTitle,
         posterUrl: posterUrl,
         isTv: isTv,
         mediaId: mediaId,
@@ -3134,16 +3143,6 @@
     data: null,
   };
 
-  let castNextEpState = {
-    ready: false,
-    triggered: false,
-    cancelled: false,
-    timer: null,
-    countdown: 10,
-    data: null,
-    outroStart: null,
-  };
-
   function resetSegmentsState() {
     segmentsState = {
       intro: null,
@@ -3175,18 +3174,6 @@
   }
 
   function resetCastNextEpisodeState() {
-    if (castNextEpState.timer) {
-      clearInterval(castNextEpState.timer);
-    }
-    castNextEpState = {
-      ready: false,
-      triggered: false,
-      cancelled: false,
-      timer: null,
-      countdown: 10,
-      data: null,
-      outroStart: null,
-    };
     if (elements.castNextEpisodeBanner) {
       elements.castNextEpisodeBanner.classList.add("hidden");
     }
@@ -3429,132 +3416,46 @@
     }
   }
 
-  // Cast Next Episode Functions (Option A)
-  async function prepareCastNextEpisode(mediaId, seasonNumber, episodeNumber, dur = 0) {
-    if (!mediaId || !seasonNumber || !episodeNumber) return;
-    try {
-      console.log(`[StreamingHub Cast] Pre-fetching next episode and segments for ${mediaId} S${seasonNumber}E${episodeNumber}...`);
-      const nextUrl = apiUrl(`api/catalog/next-episode/${encodeURIComponent(mediaId)}/${seasonNumber}/${episodeNumber}`);
-      const durParam = dur && dur > 60 ? `?duration=${Math.round(dur)}` : "";
-      const skipUrl = apiUrl(`api/catalog/skip-segments/${encodeURIComponent(mediaId)}/${seasonNumber}/${episodeNumber}${durParam}`);
-
-      const [nextResp, skipResp] = await Promise.all([
-        fetch(nextUrl).catch(() => null),
-        fetch(skipUrl).catch(() => null),
-      ]);
-
-      if (nextResp && nextResp.ok) {
-        const nextData = await nextResp.json();
-        if (nextData && nextData.has_next && nextData.next) {
-          castNextEpState.data = nextData.next;
-          castNextEpState.ready = true;
-          if (elements.castBarNextEp) {
-            elements.castBarNextEp.classList.remove("hidden");
-          }
-          console.log(`[StreamingHub Cast] Next episode ready: S${nextData.next.season_number}:E${nextData.next.episode_number}`);
-        } else {
-          castNextEpState.data = null;
-          castNextEpState.ready = false;
-          if (elements.castBarNextEp) {
-            elements.castBarNextEp.classList.add("hidden");
-          }
-          console.log(`[StreamingHub Cast] No next episode available.`);
-        }
-      } else {
-        castNextEpState.data = null;
-        castNextEpState.ready = false;
-        if (elements.castBarNextEp) {
-          elements.castBarNextEp.classList.add("hidden");
-        }
+  // Cast Next Episode Functions (Server-Synchronized)
+  function updateCastNextEpisodeBanner(nextEpState) {
+    if (!elements.castNextEpisodeBanner) return;
+    if (nextEpState && nextEpState.countdown_active && nextEpState.has_next) {
+      if (elements.castNextEpTitle) {
+        elements.castNextEpTitle.textContent = nextEpState.title || "Passaggio al prossimo episodio...";
       }
+      if (elements.castNextCountdown) {
+        elements.castNextCountdown.textContent = String(nextEpState.countdown_remaining || 0);
+      }
+      elements.castNextEpisodeBanner.classList.remove("hidden");
+    } else {
+      elements.castNextEpisodeBanner.classList.add("hidden");
+    }
+  }
 
-      if (skipResp && skipResp.ok) {
-        const skipData = await skipResp.json();
-        if (skipData && skipData.outro && typeof skipData.outro.start === "number") {
-          castNextEpState.outroStart = skipData.outro.start;
-          console.log(`[StreamingHub Cast] Outro start: ${castNextEpState.outroStart}s`);
+  async function triggerNextEpisodeAction(action) {
+    const entityId = state.castSession ? state.castSession.entityId : null;
+    try {
+      const resp = await fetch(apiUrl("api/cast/next-episode/action"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entity_id: entityId,
+          action: action,
+        }),
+      });
+      if (resp.ok) {
+        if (action === "play_now") {
+          showToast("Avvio prossimo episodio...", "info");
+        } else if (action === "cancel") {
+          showToast("Riproduzione automatica annullata", "info");
+        }
+        if (elements.castNextEpisodeBanner) {
+          elements.castNextEpisodeBanner.classList.add("hidden");
         }
       }
     } catch (err) {
-      console.warn("[StreamingHub Cast] Prepare error:", err);
+      console.warn("Failed sending next episode action:", err);
     }
-  }
-
-  function checkCastNextEpisodeTrigger(curSec, durSec) {
-    if (!state.castSession.active || !state.castSession.isTv) return;
-    if (!castNextEpState.ready || castNextEpState.triggered || castNextEpState.cancelled) return;
-    if (durSec <= 30) return;
-
-    let outroTriggerTime;
-    if (castNextEpState.outroStart && castNextEpState.outroStart >= durSec * 0.70 && castNextEpState.outroStart < durSec - 5) {
-      outroTriggerTime = castNextEpState.outroStart;
-    } else {
-      outroTriggerTime = Math.max(durSec - 35, durSec * 0.98);
-    }
-
-    if (curSec >= outroTriggerTime) {
-      console.log(`[StreamingHub Cast] Triggering countdown at ${curSec}s (outro: ${outroTriggerTime}s)`);
-      triggerCastNextEpisodeCountdown();
-    }
-  }
-
-  function triggerCastNextEpisodeCountdown() {
-    castNextEpState.triggered = true;
-    const nextData = castNextEpState.data;
-    if (!nextData || !nextData.episode) return;
-
-    const nextEp = nextData.episode;
-    if (elements.castNextEpTitle) {
-      elements.castNextEpTitle.textContent = `S${nextData.season_number}:E${nextData.episode_number} - ${nextEp.title || "Prossimo Episodio"}`;
-    }
-    if (elements.castNextEpisodeBanner) {
-      elements.castNextEpisodeBanner.classList.remove("hidden");
-    }
-
-    castNextEpState.countdown = 10;
-    if (elements.castNextCountdown) {
-      elements.castNextCountdown.textContent = "10";
-    }
-
-    if (castNextEpState.timer) clearInterval(castNextEpState.timer);
-    castNextEpState.timer = setInterval(() => {
-      castNextEpState.countdown -= 1;
-      if (elements.castNextCountdown) {
-        elements.castNextCountdown.textContent = String(castNextEpState.countdown);
-      }
-      if (castNextEpState.countdown <= 0) {
-        clearInterval(castNextEpState.timer);
-        playPendingCastNextEpisode();
-      }
-    }, 1000);
-  }
-
-  function cancelPendingCastNextEpisode() {
-    if (castNextEpState.timer) clearInterval(castNextEpState.timer);
-    castNextEpState.cancelled = true;
-    if (elements.castNextEpisodeBanner) {
-      elements.castNextEpisodeBanner.classList.add("hidden");
-    }
-    showToast("Passaggio al prossimo episodio su Cast annullato", "info");
-  }
-
-  async function playPendingCastNextEpisode() {
-    if (castNextEpState.timer) clearInterval(castNextEpState.timer);
-    if (!castNextEpState.data) return;
-
-    const nextData = castNextEpState.data;
-    const nextEp = nextData.episode;
-    resetCastNextEpisodeState();
-
-    if (!nextEp.sources || nextEp.sources.length === 0) {
-      showToast("Nessuna sorgente disponibile per il prossimo episodio", "warning");
-      return;
-    }
-
-    const firstSource = nextEp.sources[0];
-    const nextTitle = `${state.selectedItem ? state.selectedItem.title : "Serie TV"} - S${nextData.season_number}E${nextData.episode_number}`;
-    showToast(`Avvio ${nextTitle} su Cast...`, "info");
-    await castToDevice(firstSource, nextTitle, state.castSession.entityId);
   }
 
   let lastProgressReportTime = 0;
@@ -3739,10 +3640,6 @@
     document.body.classList.add("cast-active");
 
     resetCastNextEpisodeState();
-    if (state.castSession.isTv && state.castSession.season && state.castSession.episode) {
-      prepareCastNextEpisode(initData.mediaId, initData.season, initData.episode);
-    }
-
     startCastPolling(initData.entityId);
   }
 
@@ -3804,7 +3701,6 @@
           state.castSession.position = state.castSession.duration;
         }
         renderCastProgressUI();
-        checkCastNextEpisodeTrigger(state.castSession.position, state.castSession.duration);
       }
     }, 1000);
 
@@ -3838,10 +3734,14 @@
       if (!data) return;
 
       if (!data.active && data.state && ["off", "idle", "standby"].includes(data.state)) {
-        state.castSession.idleCount = (state.castSession.idleCount || 0) + 1;
-        if (state.castSession.idleCount >= 3) {
-          hideCastBar();
-          return;
+        if (data.next_episode && data.next_episode.countdown_active) {
+          state.castSession.idleCount = 0;
+        } else {
+          state.castSession.idleCount = (state.castSession.idleCount || 0) + 1;
+          if (state.castSession.idleCount >= 3) {
+            hideCastBar();
+            return;
+          }
         }
       } else if (data.active) {
         state.castSession.idleCount = 0;
@@ -3862,10 +3762,20 @@
       state.castSession.volume = data.volume_level !== undefined ? data.volume_level : 1;
       state.castSession.muted = !!data.is_volume_muted;
 
-      checkCastNextEpisodeTrigger(state.castSession.position, state.castSession.duration);
+      if (data.next_episode) {
+        updateCastNextEpisodeBanner(data.next_episode);
+      } else {
+        updateCastNextEpisodeBanner(null);
+      }
 
       if (data.title && elements.castBarTitle) {
         elements.castBarTitle.textContent = data.title;
+      }
+      if (data.season_number && data.episode_number && elements.castBarBadge) {
+        state.castSession.season = data.season_number;
+        state.castSession.episode = data.episode_number;
+        elements.castBarBadge.textContent = `S${data.season_number}:E${data.episode_number}`;
+        elements.castBarBadge.classList.remove("hidden");
       }
       if (data.device_name && elements.castBarDevice) {
         elements.castBarDevice.textContent = data.device_name;

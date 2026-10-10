@@ -29,6 +29,23 @@ class HACoreClient:
         self._cached_host_ip: str | None = None
         self._cast_trackers: dict[str, asyncio.Task] = {}
         self._active_cast_sessions: dict[str, dict[str, Any]] = {}
+        self._countdown_tasks: dict[str, asyncio.Task] = {}
+        self._next_episode_fetcher: Any | None = None
+        self._skip_segments_manager: Any | None = None
+        self._play_next_handler: Any | None = None
+        self._ws_task: asyncio.Task | None = None
+
+    def set_next_episode_fetcher(self, fetcher: Any) -> None:
+        """Set async callback to fetch next episode details (media_id, season, episode)."""
+        self._next_episode_fetcher = fetcher
+
+    def set_skip_segments_manager(self, manager: Any) -> None:
+        """Set async callback to fetch skip segments (media_id, season, episode, duration)."""
+        self._skip_segments_manager = manager
+
+    def set_play_next_handler(self, handler: Any) -> None:
+        """Set async callback to resolve and initiate playback of the next episode."""
+        self._play_next_handler = handler
 
     @property
     def is_available(self) -> bool:
@@ -490,6 +507,275 @@ class HACoreClient:
             {"seek_position": float(position_seconds)},
         )
 
+    async def call_service(
+        self,
+        domain: str,
+        service: str,
+        service_data: dict[str, Any] | None = None,
+    ) -> bool:
+        """Call an arbitrary service in Home Assistant Core."""
+        if not self.is_available:
+            return False
+        payload = service_data or {}
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.post(
+                    f"{self.base_url}/services/{domain}/{service}",
+                    headers=self._get_headers(),
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp,
+            ):
+                return resp.status in (200, 201)
+        except Exception as err:
+            _LOGGER.warning("Error calling %s.%s: %s", domain, service, err)
+            return False
+
+    async def send_next_episode_notification(self, entity_id: str, session: dict[str, Any]) -> bool:
+        """Send an actionable notification via Home Assistant notify.notify service."""
+        if not self.is_available:
+            return False
+
+        next_ep = session.get("next_episode") or {}
+        ep_data = next_ep.get("episode") or {}
+        ep_title = ep_data.get("title") or "Prossimo Episodio"
+        s_num = next_ep.get("season_number", session.get("season_number"))
+        e_num = next_ep.get("episode_number", (session.get("episode_number") or 0) + 1)
+        series_title = session.get("title", "").split(" - S")[0] or "Serie TV"
+        friendly_device = session.get("device_name") or entity_id
+        if friendly_device.startswith("media_player."):
+            friendly_device = friendly_device.replace("media_player.", "").replace("_", " ").title()
+
+        tag = f"streaming_hub_next_{entity_id}"
+        payload = {
+            "title": f"Prossimo Episodio - {series_title}",
+            "message": f"S{s_num}E{e_num}: {ep_title} inizierà a breve su {friendly_device}",
+            "data": {
+                "tag": tag,
+                "actions": [
+                    {
+                        "action": "STREAMING_HUB_PLAY_NEXT",
+                        "title": "▶ Riproduci Ora",
+                    },
+                    {
+                        "action": "STREAMING_HUB_STOP",
+                        "title": "⏹ Ferma",
+                    },
+                ],
+            },
+        }
+        _LOGGER.info("Sending Home Assistant notification for next episode S%sE%s on %s", s_num, e_num, entity_id)
+        return await self.call_service("notify", "notify", payload)
+
+    async def clear_next_episode_notification(self, entity_id: str) -> bool:
+        """Dismiss the actionable notification in Home Assistant."""
+        if not self.is_available:
+            return False
+        tag = f"streaming_hub_next_{entity_id}"
+        payload = {
+            "message": "clear_notification",
+            "data": {
+                "tag": tag,
+            },
+        }
+        return await self.call_service("notify", "notify", payload)
+
+    def start_event_listener(self) -> None:
+        """Subscribe to mobile_app_notification_action events via Home Assistant WebSocket API."""
+        if not self.is_available or self._ws_task is not None:
+            return
+
+        async def _ws_loop():
+            ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+            if ws_url.endswith("/api"):
+                ws_url = f"{ws_url[:-4]}/websocket"
+            elif not ws_url.endswith("/websocket"):
+                ws_url = f"{ws_url}/websocket"
+
+            while True:
+                try:
+                    async with aiohttp.ClientSession() as session, session.ws_connect(ws_url, timeout=10) as ws:
+                        # 1. Receive auth_required
+                            msg = await ws.receive_json()
+                            if msg.get("type") == "auth_required":
+                                await ws.send_json({"type": "auth", "access_token": self.token})
+                                auth_resp = await ws.receive_json()
+                                if auth_resp.get("type") != "auth_ok":
+                                    _LOGGER.debug("HA WS auth failed: %s", auth_resp)
+                                    await asyncio.sleep(30)
+                                    continue
+
+                            # 2. Subscribe to mobile_app_notification_action
+                            await ws.send_json({
+                                "id": 1,
+                                "type": "subscribe_events",
+                                "event_type": "mobile_app_notification_action",
+                            })
+                            sub_resp = await ws.receive_json()
+                            _LOGGER.debug("HA WS subscribed to notification events: %s", sub_resp)
+
+                            # 3. Event loop
+                            async for ws_msg in ws:
+                                if ws_msg.type == aiohttp.WSMsgType.TEXT:
+                                    data = ws_msg.json()
+                                    if data.get("type") == "event":
+                                        event = data.get("event", {})
+                                        event_data = event.get("data", {})
+                                        action = event_data.get("action")
+                                        if action == "STREAMING_HUB_PLAY_NEXT":
+                                            await self.handle_next_episode_action(action="play_now")
+                                        elif action == "STREAMING_HUB_STOP":
+                                            await self.handle_next_episode_action(action="cancel")
+                                elif ws_msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                    break
+                except asyncio.CancelledError:
+                    break
+                except Exception as err:
+                    _LOGGER.debug("HA WS notification listener error: %s (retrying in 20s)", err)
+                    await asyncio.sleep(20)
+
+        self._ws_task = asyncio.create_task(_ws_loop())
+
+    def stop_event_listener(self) -> None:
+        """Stop the Home Assistant WebSocket event listener."""
+        if self._ws_task:
+            self._ws_task.cancel()
+            self._ws_task = None
+
+    async def _prepare_next_episode(
+        self,
+        entity_id: str,
+        media_id: str,
+        season: int | None,
+        episode: int | None,
+    ) -> None:
+        """Asynchronously pre-fetch next episode details and skip outro markers."""
+        session = self._active_cast_sessions.get(entity_id)
+        if not session or not media_id or season is None or episode is None or session.get("media_type") != "tv":
+            return
+
+        if self._next_episode_fetcher:
+            try:
+                next_data = await self._next_episode_fetcher(media_id, season, episode)
+                if next_data and session == self._active_cast_sessions.get(entity_id):
+                    session["next_episode"] = next_data
+                    ep_obj = next_data.get("episode") or {}
+                    _LOGGER.info(
+                        "Next episode pre-fetched for %s: S%sE%s - %s",
+                        entity_id,
+                        next_data.get("season_number"),
+                        next_data.get("episode_number"),
+                        ep_obj.get("title") or "Prossimo Episodio",
+                    )
+            except Exception as err:
+                _LOGGER.debug("Error pre-fetching next episode for %s: %s", entity_id, err)
+
+        if self._skip_segments_manager:
+            try:
+                skip_data = await self._skip_segments_manager(media_id, season, episode)
+                if skip_data and session == self._active_cast_sessions.get(entity_id):
+                    outro = skip_data.get("outro")
+                    if isinstance(outro, dict) and outro.get("start") is not None:
+                        session["outro_start"] = float(outro["start"])
+                        _LOGGER.info("Outro start pre-fetched for %s: %ss", entity_id, session["outro_start"])
+            except Exception as err:
+                _LOGGER.debug("Error pre-fetching skip segments for %s: %s", entity_id, err)
+
+    async def trigger_next_episode_countdown(self, entity_id: str) -> None:
+        """Trigger the 15-second countdown and notification for the next episode."""
+        session = self._active_cast_sessions.get(entity_id)
+        if not session or session.get("countdown_active") or session.get("next_dismissed"):
+            return
+
+        next_ep = session.get("next_episode")
+        if not next_ep or not (next_ep.get("episode") or next_ep.get("has_next")):
+            return
+
+        session["countdown_active"] = True
+        session["countdown_remaining"] = 15
+        session["notified"] = True
+        _LOGGER.info("Starting next episode countdown (15s) for %s on %s", session.get("title"), entity_id)
+
+        # Broadcast actionable notification via notify.notify
+        asyncio.create_task(self.send_next_episode_notification(entity_id, session))
+
+        # Launch countdown worker
+        if entity_id in self._countdown_tasks:
+            self._countdown_tasks[entity_id].cancel()
+        self._countdown_tasks[entity_id] = asyncio.create_task(self._run_next_episode_countdown(entity_id))
+
+    async def _run_next_episode_countdown(self, entity_id: str) -> None:
+        """Run the 1-second interval countdown for 15 seconds."""
+        try:
+            for _ in range(15):
+                await asyncio.sleep(1)
+                session = self._active_cast_sessions.get(entity_id)
+                if not session or not session.get("countdown_active") or session.get("next_dismissed"):
+                    return
+                rem = session.get("countdown_remaining", 0) - 1
+                session["countdown_remaining"] = max(0, rem)
+
+            session = self._active_cast_sessions.get(entity_id)
+            if session and session.get("countdown_active") and not session.get("next_dismissed"):
+                _LOGGER.info("Countdown expired on %s: auto-playing next episode!", entity_id)
+                session["countdown_active"] = False
+                await self.execute_play_next_episode(entity_id)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._countdown_tasks.pop(entity_id, None)
+
+    async def handle_next_episode_action(self, entity_id: str | None = None, action: str = "play_now") -> bool:
+        """Handle user action (play_now or cancel) from notification or in-app UI."""
+        target_id = entity_id
+        if not target_id and self._active_cast_sessions:
+            target_id = next(iter(self._active_cast_sessions.keys()))
+        if not target_id or target_id not in self._active_cast_sessions:
+            return False
+
+        session = self._active_cast_sessions[target_id]
+        if action == "play_now":
+            if target_id in self._countdown_tasks:
+                self._countdown_tasks[target_id].cancel()
+            session["countdown_active"] = False
+            session["countdown_remaining"] = 0
+            _LOGGER.info("Immediate next episode playback requested for %s", target_id)
+            return await self.execute_play_next_episode(target_id)
+        if action == "cancel":
+            if target_id in self._countdown_tasks:
+                self._countdown_tasks[target_id].cancel()
+            session["countdown_active"] = False
+            session["countdown_remaining"] = 0
+            session["next_dismissed"] = True
+            _LOGGER.info("Next episode autoplay cancelled for %s", target_id)
+            await self.clear_next_episode_notification(target_id)
+            # If the device is currently idle (e.g. ended without outro), stop the tracker cleanly
+            if session.get("state") in ("off", "idle", "standby"):
+                if target_id in self._cast_trackers:
+                    self._cast_trackers[target_id].cancel()
+                self._active_cast_sessions.pop(target_id, None)
+            return True
+        return False
+
+    async def execute_play_next_episode(self, entity_id: str) -> bool:
+        """Resolve and trigger playback for the next episode via the registered handler."""
+        session = self._active_cast_sessions.get(entity_id)
+        if not session:
+            return False
+
+        await self.clear_next_episode_notification(entity_id)
+        if self._play_next_handler:
+            try:
+                success = await self._play_next_handler(entity_id, session)
+                if success:
+                    _LOGGER.info("Successfully transitioned to next episode on %s", entity_id)
+                    return True
+                _LOGGER.warning("play_next_handler returned False for %s", entity_id)
+            except Exception as err:
+                _LOGGER.error("Failed executing play_next_handler on %s: %s", entity_id, err)
+        return False
+
     def start_cast_tracker(
         self,
         entity_id: str,
@@ -521,7 +807,18 @@ class HACoreClient:
             "episode_number": episode_number,
             "seek_position": seek_position,
             "profile_id": profile_id,
+            "next_episode": None,
+            "outro_start": None,
+            "countdown_active": False,
+            "countdown_remaining": 15,
+            "notified": False,
+            "next_dismissed": False,
         }
+
+        if media_type == "tv" and season_number is not None and episode_number is not None:
+            asyncio.create_task(
+                self._prepare_next_episode(entity_id, media_id, season_number, episode_number)
+            )
 
         task = asyncio.create_task(
             self._track_cast_playback(
@@ -627,6 +924,16 @@ class HACoreClient:
                             profile_id=profile_id,
                         )
 
+                        # Check Case 1: Outro metadata is present and reached
+                        session = self._active_cast_sessions.get(entity_id)
+                        if session and not session.get("next_dismissed") and not session.get("countdown_active"):
+                            next_info = session.get("next_episode")
+                            outro_start = session.get("outro_start")
+                            has_next_valid = bool(next_info and (next_info.get("has_next") or next_info.get("episode")))
+                            if has_next_valid and outro_start and outro_start > 0:
+                                if pos_float >= outro_start:
+                                    await self.trigger_next_episode_countdown(entity_id)
+
                         # Trakt scrobble integration
                         if trakt_client and trakt_client.is_authenticated:
                             percent = (pos_float / dur_float * 100) if dur_float > 0 else 0
@@ -646,6 +953,28 @@ class HACoreClient:
                                     )
                                 )
                 elif state in ("off", "idle", "standby"):
+                    session = self._active_cast_sessions.get(entity_id)
+
+                    # If countdown is active, keep tracker loop alive waiting for transition
+                    if session and session.get("countdown_active"):
+                        idle_counter = 0
+                        continue
+
+                    # Case 2: Outro metadata was absent and episode ended (device went idle after playing)
+                    if (
+                        session
+                        and has_started_playing
+                        and not session.get("next_dismissed")
+                        and not session.get("countdown_active")
+                    ):
+                        next_info = session.get("next_episode")
+                        outro_start = session.get("outro_start")
+                        has_next_valid = bool(next_info and (next_info.get("has_next") or next_info.get("episode")))
+                        if has_next_valid and (outro_start is None or outro_start <= 0):
+                            await self.trigger_next_episode_countdown(entity_id)
+                            idle_counter = 0
+                            continue
+
                     idle_counter += 1
                     max_idle = 3 if has_started_playing else 8
                     if idle_counter >= max_idle:
@@ -675,8 +1004,11 @@ class HACoreClient:
         except Exception as err:
             _LOGGER.warning("Error in Cast tracker for %s: %s", entity_id, err)
         finally:
-            self._cast_trackers.pop(entity_id, None)
-            self._active_cast_sessions.pop(entity_id, None)
+            if entity_id in self._countdown_tasks and not self._active_cast_sessions.get(entity_id, {}).get("countdown_active"):
+                self._countdown_tasks[entity_id].cancel()
+            if self._cast_trackers.get(entity_id) is asyncio.current_task():
+                self._cast_trackers.pop(entity_id, None)
+                self._active_cast_sessions.pop(entity_id, None)
 
     async def get_cast_status(self, entity_id: str | None = None) -> dict[str, Any]:
         """Return the current playback state and progress of the active Cast entity."""
@@ -700,11 +1032,11 @@ class HACoreClient:
 
         is_active = state in ("playing", "paused", "buffering")
 
-        if not is_active and target_id not in self._cast_trackers:
+        if not is_active and target_id not in self._cast_trackers and not session_info.get("countdown_active"):
             return {"active": False, "entity_id": target_id, "state": state}
 
-        # Keep active if tracker is running during startup
-        if target_id in self._cast_trackers and not is_active:
+        # Keep active if tracker is running during startup or countdown is counting down
+        if (target_id in self._cast_trackers or session_info.get("countdown_active")) and not is_active:
             is_active = True
 
         raw_device_name = attrs.get("friendly_name") or target_id
@@ -732,6 +1064,22 @@ class HACoreClient:
         if media_dur > 0 and raw_pos > media_dur:
             raw_pos = media_dur
 
+        # Build next_episode status object
+        next_ep_info = session_info.get("next_episode") or {}
+        next_episode_state = None
+        if next_ep_info.get("has_next") or next_ep_info.get("episode"):
+            ep_dict = next_ep_info.get("episode") or {}
+            next_episode_state = {
+                "has_next": True,
+                "title": f"S{next_ep_info.get('season_number')}:E{next_ep_info.get('episode_number')} - {ep_dict.get('title') or 'Prossimo Episodio'}",
+                "season_number": next_ep_info.get("season_number"),
+                "episode_number": next_ep_info.get("episode_number"),
+                "poster_url": ep_dict.get("poster_url") or session_info.get("poster_url"),
+                "countdown_active": bool(session_info.get("countdown_active")),
+                "countdown_remaining": int(session_info.get("countdown_remaining", 15)),
+                "outro_triggered": bool(session_info.get("countdown_active") and session_info.get("outro_start")),
+            }
+
         return {
             "active": is_active,
             "entity_id": target_id,
@@ -748,6 +1096,7 @@ class HACoreClient:
             "media_duration": media_dur,
             "volume_level": float(attrs.get("volume_level") or 1.0),
             "is_volume_muted": bool(attrs.get("is_volume_muted", False)),
+            "next_episode": next_episode_state,
         }
 
     async def control_cast(self, entity_id: str, command: str, value: float | None = None) -> bool:
