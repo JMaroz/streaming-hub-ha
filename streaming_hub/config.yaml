@@ -4,7 +4,7 @@ description: >-
   Hub multimediale per film e serie TV con streaming HLS, Ingress UI e supporto
   Cast
 url: https://github.com/JMaroz/ha-streaming-hub
-version: 2.8.0
+version: 3.0.0
 init: false
 arch:
   - aarch64

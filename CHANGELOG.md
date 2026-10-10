@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.0.0](https://github.com/JMaroz/streaming-hub-ha/compare/v2.8.0...v3.0.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* child film series not opening correctlyy
+
+### Features
+
+* **cast:** server-side next episode autoplay with actionable notifications ([8d57cf0](https://github.com/JMaroz/streaming-hub-ha/commit/8d57cf0b9bd0960f99c0a2478bb3e3af1a1d0fa7))
+
+
+### Bug Fixes
+
+* **cast:** normalize watch history media id and purge duplicate continue watching items ([7dc4286](https://github.com/JMaroz/streaming-hub-ha/commit/7dc42867c8965a3330169e2adfc1862a1f20f1b7))
+* child film series not opening correctlyy ([32a8974](https://github.com/JMaroz/streaming-hub-ha/commit/32a897429c9f0391ca99099fc0a6a36fcdcd6910))
+
 ## [2.8.0](https://github.com/JMaroz/streaming-hub-ha/compare/v2.7.0...v2.8.0) (2026-10-07)
 
 
