@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.0.1](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.0...v3.0.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* **anime:** ensure robust metadata parsing, movie playback sources and regex backreferences ([a726cd6](https://github.com/JMaroz/streaming-hub-ha/commit/a726cd6c6730b11a7f920a343704e1fb1eaeabfc))
+* **anime:** support provider keyword and add connector helper in DoHResolver ([6daf270](https://github.com/JMaroz/streaming-hub-ha/commit/6daf270f2f93e47e17e67c4a799df43d35f00c9b))
+
 ## [3.0.0](https://github.com/JMaroz/streaming-hub-ha/compare/v2.8.0...v3.0.0) (2026-10-10)
 
 
