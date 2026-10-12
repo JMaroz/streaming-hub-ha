@@ -348,6 +348,77 @@ class TestAnimeStreamClient:
         assert releases[1].dub_type == "dub"
 
     @pytest.mark.asyncio
+    async def test_get_latest_releases_layout_items_unwrap(self) -> None:
+        """Test that layout-items paginated data unwraps item['anime'] and deduplicates by ID."""
+        client = AnimeStreamClient(base_url="https://anime.local")
+        items_payload = {
+            "current_page": 1,
+            "data": [
+                {
+                    "id": 9901,
+                    "number": "5",
+                    "anime": {"id": 10, "title_eng": "One Piece", "slug": "one-piece", "type": "TV", "dub": 0},
+                },
+                {
+                    "id": 9902,
+                    "number": "4",
+                    "anime": {"id": 10, "title_eng": "One Piece", "slug": "one-piece", "type": "TV", "dub": 0},
+                },
+                {
+                    "id": 9903,
+                    "number": "2",
+                    "anime": {"id": 20, "title_eng": "Psyren", "slug": "psyren", "type": "TV", "dub": 0},
+                },
+            ],
+        }
+        escaped = json.dumps(items_payload).replace('"', "&quot;")
+        mock_html = f'<layout-items items-json="{escaped}"></layout-items>'
+
+        client._request = AsyncMock(return_value=mock_html)
+        releases = await client.get_latest_releases(page=1)
+
+        assert len(releases) == 2
+        assert releases[0].title == "One Piece"
+        assert releases[1].title == "Psyren"
+
+    @pytest.mark.asyncio
+    async def test_get_homepage_carousels_extracts_latest_and_featured(self) -> None:
+        """Test that get_homepage_carousels returns both Ultime Uscite Anime and Anime in Evidenza from homepage."""
+        client = AnimeStreamClient(base_url="https://anime.local")
+        layout_payload = {
+            "current_page": 1,
+            "data": [
+                {
+                    "id": 101,
+                    "number": "1",
+                    "anime": {"id": 10, "title_eng": "Latest Anime", "slug": "latest-anime", "type": "TV"},
+                }
+            ],
+        }
+        carousel_payload = [
+            {"id": 20, "title_eng": "Featured Anime", "slug": "featured-anime", "type": "TV"},
+        ]
+        escaped_layout = json.dumps(layout_payload).replace('"', "&quot;")
+        escaped_carousel = json.dumps(carousel_payload).replace('"', "&quot;")
+        mock_html = (
+            f'<the-carousel animes="{escaped_carousel}"></the-carousel>'
+            f'<layout-items items-json="{escaped_layout}"></layout-items>'
+        )
+
+        client._request = AsyncMock(return_value=mock_html)
+        hero, carousels = await client.get_homepage_carousels()
+
+        assert hero is not None
+        assert hero.title == "Latest Anime"
+        assert len(carousels) == 2
+        assert carousels[0]["id"] == "anime_latest"
+        assert carousels[0]["title"] == "Ultime Uscite Anime"
+        assert carousels[0]["items"][0].title == "Latest Anime"
+        assert carousels[1]["id"] == "anime_featured"
+        assert carousels[1]["title"] == "Anime in Evidenza"
+        assert carousels[1]["items"][0].title == "Featured Anime"
+
+    @pytest.mark.asyncio
     async def test_resolve_stream_vixcloud_flow(self) -> None:
         client = AnimeStreamClient(base_url="https://anime.local")
         client.get_embed_url = AsyncMock(return_value="https://vixcloud.co/embed/abc123xyz")
@@ -491,4 +562,3 @@ class TestAnimeSourceIntegration:
         assert resolved.stream_format == "hls"
         assert resolved.provider_id == "anime"
         assert resolved.headers == {"User-Agent": "Test"}
-

@@ -283,3 +283,186 @@ class TestHomeCarousels:
             assert len(carousels) == 2
             assert carousels[0]["title"] == "Film del Momento"
             assert carousels[1]["title"] == "Serie TV del Momento"
+
+    @pytest.mark.asyncio
+    async def test_get_homepage_carousels_with_dynamic_sliders(self) -> None:
+        """Test that dynamic editorial and genre sliders are fetched in batches of max 6 via POST /api/sliders/fetch."""
+        client = ReactiveStreamClient(base_url="https://streaming.example.com/")
+
+        home_props = {
+            "props": {
+                "locale": "it",
+                "sliders": [
+                    {
+                        "name": "trending",
+                        "label": "I titoli del momento",
+                        "titles": [{"id": 1, "name": "Trending 1", "slug": "trending-1", "type": "movie"}],
+                    }
+                ],
+                "genres": [
+                    {"name": "Azione"},
+                    {"name": "Commedia"},
+                    {"name": "Thriller"},
+                    {"name": "Fantascienza"},
+                ],
+            }
+        }
+
+        posted_batches: list[list[dict]] = []
+
+        async def mock_request_side_effect(
+            url: str,
+            headers: dict | None = None,
+            method: str = "GET",
+            data: dict | None = None,
+        ) -> str:
+            if method == "POST" and "api/sliders/fetch" in url:
+                batch = (data or {}).get("sliders", [])
+                assert len(batch) <= 6
+                posted_batches.append(batch)
+                resp_sliders = []
+                for spec in batch:
+                    s_name = spec.get("name")
+                    if s_name == "new-episodes":
+                        resp_sliders.append(
+                            {
+                                "name": "new-episodes",
+                                "label": "Nuovi episodi",
+                                "titles": [{"id": 10, "name": "Episodio Nuovo", "slug": "ep-nuovo", "type": "tv"}],
+                            }
+                        )
+                    elif s_name == "top10" and spec.get("title_type") == "movie":
+                        resp_sliders.append(
+                            {
+                                "name": "top10",
+                                "label": "Top 10 film oggi",
+                                "titles": [{"id": 20, "name": "Top Film", "slug": "top-film", "type": "movie"}],
+                            }
+                        )
+                    elif s_name == "genre":
+                        g_name = spec.get("genre")
+                        resp_sliders.append(
+                            {
+                                "name": "genre",
+                                "label": g_name,
+                                "titles": [
+                                    {
+                                        "id": 100 + len(resp_sliders),
+                                        "name": f"Film {g_name}",
+                                        "slug": f"film-{g_name.lower()}",
+                                        "type": "movie",
+                                    }
+                                ],
+                            }
+                        )
+                return json.dumps(resp_sliders)
+            return json.dumps(home_props)
+
+        with patch.object(client, "_request", new_callable=AsyncMock) as mock_req:
+            mock_req.side_effect = mock_request_side_effect
+            hero, carousels = await client.get_homepage_carousels()
+
+            assert hero is not None
+            assert hero.title == "Trending 1"
+            # 3 editorial + 4 genres = 7 specs -> 2 batches (6 + 1)
+            assert len(posted_batches) == 2
+            assert len(posted_batches[0]) == 6
+            assert len(posted_batches[1]) == 1
+
+            titles = [c["title"] for c in carousels]
+            assert "I titoli del momento" in titles
+            assert "Nuovi episodi" in titles
+            assert "Top 10 film oggi" in titles
+            assert "Azione" in titles
+            assert "Commedia" in titles
+            assert "Thriller" in titles
+            assert "Fantascienza" in titles
+
+    @pytest.mark.asyncio
+    async def test_get_latest_movies_and_tv_preserve_chronological_order(self) -> None:
+        """Test that get_latest_movies and get_latest_tv preserve chronological order without sorting by rating or mixing trending."""
+        client = ReactiveStreamClient(base_url="https://streaming.example.com/")
+
+        movies_page_props = {
+            "props": {
+                "sliders": [
+                    {
+                        "name": "trending",
+                        "titles": [
+                            {
+                                "id": 999,
+                                "name": "Old High Rated Trending",
+                                "slug": "old-trending",
+                                "type": "movie",
+                                "release_date": "2026-07-01",
+                                "score": "9.8",
+                            }
+                        ],
+                    },
+                    {
+                        "name": "latest",
+                        "titles": [
+                            {
+                                "id": 101,
+                                "name": "New Release Low Score",
+                                "slug": "new-low",
+                                "type": "movie",
+                                "release_date": "2025-11-27",
+                                "score": "4.5",
+                            },
+                            {
+                                "id": 102,
+                                "name": "Second New Release",
+                                "slug": "second-new",
+                                "type": "movie",
+                                "release_date": "2026-04-16",
+                                "score": "7.0",
+                            },
+                        ],
+                    },
+                ]
+            }
+        }
+
+        archive_props = {
+            "props": {
+                "titles": [
+                    {
+                        "id": 102,
+                        "name": "Second New Release",
+                        "slug": "second-new",
+                        "type": "movie",
+                        "release_date": "2026-04-16",
+                        "score": "7.0",
+                    },
+                    {
+                        "id": 103,
+                        "name": "Third Archive Release",
+                        "slug": "third-arch",
+                        "type": "movie",
+                        "release_date": "2026-10-09",
+                        "score": "8.9",
+                    },
+                ]
+            }
+        }
+
+        requested_urls: list[str] = []
+
+        async def mock_req_side_effect(url: str, headers: dict | None = None) -> str:
+            requested_urls.append(url)
+            if "it/movies" in url:
+                return json.dumps(movies_page_props)
+            return json.dumps(archive_props)
+
+        with patch.object(client, "_request", new_callable=AsyncMock) as mock_req:
+            mock_req.side_effect = mock_req_side_effect
+            movies = await client.get_latest_movies(page=1)
+
+            # Must NOT include 'Old High Rated Trending'
+            movie_titles = [m.title for m in movies]
+            assert "Old High Rated Trending" not in movie_titles
+            # Must preserve exact chronological order: 101 (score 4.5, 2025), 102 (score 7.0, 2026), 103 (score 8.9, 2026)
+            assert movie_titles == ["New Release Low Score", "Second New Release", "Third Archive Release"]
+            # Must NOT pass invalid sort=uploaded_at in archive URL
+            assert any("it/archive?type=movie&page=1" in u and "sort=uploaded_at" not in u for u in requested_urls)

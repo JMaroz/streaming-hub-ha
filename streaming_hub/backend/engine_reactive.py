@@ -572,6 +572,44 @@ class ReactiveStreamClient:
 
         return results
 
+    async def _fetch_dynamic_sliders(
+        self,
+        slider_specs: list[dict[str, Any]],
+        locale: str = "it",
+    ) -> list[dict[str, Any]]:
+        """Fetch dynamic sliders from /api/sliders/fetch in batches of up to 6 items."""
+        if not slider_specs:
+            return []
+
+        api_headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        url = f"{self.base_url}api/sliders/fetch?lang={locale}"
+        batches = [slider_specs[i : i + 6] for i in range(0, len(slider_specs), 6)]
+
+        async def _fetch_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            try:
+                resp_text = await self._request(
+                    url,
+                    headers=api_headers,
+                    method="POST",
+                    data={"sliders": batch},
+                )
+                parsed = json.loads(resp_text)
+                if isinstance(parsed, list):
+                    return [s for s in parsed if isinstance(s, dict)]
+            except Exception as err:
+                _LOGGER.debug("Dynamic sliders batch fetch failed: %s", err)
+            return []
+
+        results = await asyncio.gather(*(_fetch_batch(b) for b in batches))
+        merged: list[dict[str, Any]] = []
+        for batch_res in results:
+            merged.extend(batch_res)
+        return merged
+
     async def get_homepage_carousels(self) -> tuple[Movie | TvSeries | None, list[dict[str, Any]]]:
         """Fetch editorial and thematic sliders from the homepage or media catalog hubs."""
         inertia_headers = {
@@ -579,7 +617,7 @@ class ReactiveStreamClient:
             "X-Inertia": "true",
             "X-Requested-With": "XMLHttpRequest",
         }
-        candidate_urls = [f"{self.base_url}it/browse", f"{self.base_url}browse", f"{self.base_url}it", self.base_url]
+        candidate_urls = [f"{self.base_url}it", self.base_url, f"{self.base_url}it/browse", f"{self.base_url}browse"]
 
         label_translations = {
             "latest": "Nuove Uscite",
@@ -592,7 +630,26 @@ class ReactiveStreamClient:
             "series": "Serie TV del Momento",
             "suggested": "Consigliati per Te",
             "recommended": "Consigliati",
+            "new-episodes": "Nuovi Episodi",
         }
+
+        preferred_genres = [
+            "Azione",
+            "Commedia",
+            "Thriller",
+            "Fantascienza",
+            "Dramma",
+            "Horror",
+            "Animazione",
+            "Avventura",
+            "Crime",
+            "Famiglia",
+            "Fantasy",
+            "Romance",
+            "Documentario",
+            "Mistero",
+            "Guerra",
+        ]
 
         def _parse_sliders_and_hero(
             props: dict[str, Any], default_hero: Movie | TvSeries | None = None
@@ -647,9 +704,14 @@ class ReactiveStreamClient:
                 if items:
                     if hero_item is None and name in ("billboard", "featured", "hero", "trending"):
                         hero_item = items[0]
+                    carousel_id = name or f"slider_{len(parsed) + 1}"
+                    if name.lower() == "genre" and title:
+                        carousel_id = f"genre_{title.lower().replace(' ', '_')}"
+                    elif slider.get("title_type") and name:
+                        carousel_id = f"{name}_{slider['title_type']}"
                     parsed.append(
                         {
-                            "id": name or f"slider_{len(parsed) + 1}",
+                            "id": carousel_id,
                             "title": title,
                             "items": items,
                         }
@@ -668,6 +730,48 @@ class ReactiveStreamClient:
 
                 hero_item, carousels = _parse_sliders_and_hero(props)
                 if carousels:
+                    # Fetch dynamic editorial & genre sliders when genres list is available in props
+                    raw_genres = props.get("genres")
+                    if isinstance(raw_genres, list) and raw_genres:
+                        available_genres: list[str] = []
+                        for g in raw_genres:
+                            g_name = g.get("name") if isinstance(g, dict) else (g if isinstance(g, str) else None)
+                            if g_name and str(g_name).strip():
+                                available_genres.append(str(g_name).strip())
+
+                        available_map = {g.lower(): g for g in available_genres}
+                        selected_genres: list[str] = [
+                            available_map[pref.lower()] for pref in preferred_genres if pref.lower() in available_map
+                        ]
+                        for g in available_genres:
+                            if g not in selected_genres and len(selected_genres) < 15:
+                                selected_genres.append(g)
+
+                        dynamic_specs: list[dict[str, Any]] = [
+                            {"name": "new-episodes", "title_type": "tv", "genre": None},
+                            {"name": "top10", "title_type": "movie", "genre": None},
+                            {"name": "top10", "title_type": "tv", "genre": None},
+                            *(
+                                {"name": "genre", "title_type": None, "genre": g_name}
+                                for g_name in selected_genres[:15]
+                            ),
+                        ]
+
+                        locale = str(props.get("locale") or "it")
+                        extra_raw = await self._fetch_dynamic_sliders(dynamic_specs, locale=locale)
+                        if extra_raw:
+                            _, extra_carousels = _parse_sliders_and_hero({"sliders": extra_raw}, default_hero=hero_item)
+                            seen_titles = {c["title"].lower() for c in carousels}
+                            seen_ids = {c["id"] for c in carousels}
+                            for ec in extra_carousels:
+                                if ec["title"].lower() in seen_titles:
+                                    continue
+                                if ec["id"] in seen_ids:
+                                    ec["id"] = f"{ec['id']}_{ec['title'].lower().replace(' ', '_')}"
+                                seen_titles.add(ec["title"].lower())
+                                seen_ids.add(ec["id"])
+                                carousels.append(ec)
+
                     if hero_item is None and carousels[0]["items"]:
                         hero_item = carousels[0]["items"][0]
                     return hero_item, carousels
@@ -729,92 +833,104 @@ class ReactiveStreamClient:
         return None, []
 
     async def get_latest_movies(self, page: int = 1) -> list[Movie]:
-        """Fetch latest movies."""
+        """Fetch latest movies in chronological addition order."""
         inertia_headers = {
             "Accept": "text/html,application/xhtml+xml",
             "X-Inertia": "true",
             "X-Requested-With": "XMLHttpRequest",
         }
+
+        latest_movies: list[Movie] = []
+        seen_ids: set[Any] = set()
 
         if page == 1:
             try:
                 html_text = await self._request(f"{self.base_url}it/movies", headers=inertia_headers)
-                props = json.loads(html_text).get("props", {})
+                props = self.extract_data_page(html_text).get("props", {})
                 sliders = props.get("sliders", [])
-                latest_titles: list[dict[str, Any]] = []
-                seen_ids: set[Any] = set()
                 for slider in sliders:
-                    if isinstance(slider, dict) and slider.get("name") in ("latest", "trending"):
+                    if isinstance(slider, dict) and slider.get("name") == "latest":
                         for t in slider.get("titles", []):
-                            if isinstance(t, dict) and t.get("id") not in seen_ids:
-                                seen_ids.add(t.get("id"))
-                                latest_titles.append(t)
-                if latest_titles:
-                    movies = [self._item_to_movie(t) for t in latest_titles if t.get("id")]
-                    movies.sort(key=lambda m: (m.year or 0, m.rating or 0.0), reverse=True)
-                    return movies
+                            if not isinstance(t, dict) or not t.get("id") or t.get("id") in seen_ids:
+                                continue
+                            if t.get("coming_soon") is True or ("uploaded_at" in t and t.get("uploaded_at") is None):
+                                continue
+                            seen_ids.add(t.get("id"))
+                            latest_movies.append(self._item_to_movie(t))
             except Exception as err:
-                _LOGGER.debug("Could not fetch latest movies from /it/movies: %s", err)
+                _LOGGER.debug("Could not fetch latest movies slider from /it/movies: %s", err)
 
-        archive_urls = [f"{self.base_url}it/archive?type=movie&sort=uploaded_at&page={page}"]
+        archive_urls = [f"{self.base_url}it/archive?type=movie&page={page}"]
         for url in archive_urls:
             try:
                 html_text = await self._request(url)
                 page_data = self.extract_data_page(html_text)
                 props = page_data.get("props", {})
                 raw_titles = self._extract_titles_from_props(props, allow_sliders=(page == 1))
-                movies = [self._item_to_movie(t) for t in raw_titles if t.get("id") and t.get("type", "movie") != "tv"]
-                if movies:
-                    movies.sort(key=lambda m: (m.year or 0, m.rating or 0.0), reverse=True)
-                    return movies
+                for t in raw_titles:
+                    if not isinstance(t, dict) or not t.get("id") or t.get("type", "movie") == "tv":
+                        continue
+                    if t.get("coming_soon") is True or ("uploaded_at" in t and t.get("uploaded_at") is None):
+                        continue
+                    if t.get("id") not in seen_ids:
+                        seen_ids.add(t.get("id"))
+                        latest_movies.append(self._item_to_movie(t))
+                if latest_movies:
+                    return latest_movies
             except Exception as err:
                 _LOGGER.debug("Could not fetch latest movies from %s: %s", url, err)
 
-        return []
+        return latest_movies
 
     async def get_latest_tv(self, page: int = 1) -> list[TvSeries]:
-        """Fetch latest TV series."""
+        """Fetch latest TV series in chronological addition order."""
         inertia_headers = {
             "Accept": "text/html,application/xhtml+xml",
             "X-Inertia": "true",
             "X-Requested-With": "XMLHttpRequest",
         }
 
+        latest_series: list[TvSeries] = []
+        seen_ids: set[Any] = set()
+
         if page == 1:
             try:
                 html_text = await self._request(f"{self.base_url}it/tv-shows", headers=inertia_headers)
-                props = json.loads(html_text).get("props", {})
+                props = self.extract_data_page(html_text).get("props", {})
                 sliders = props.get("sliders", [])
-                latest_titles: list[dict[str, Any]] = []
-                seen_ids: set[Any] = set()
                 for slider in sliders:
-                    if isinstance(slider, dict) and slider.get("name") in ("latest", "trending"):
+                    if isinstance(slider, dict) and slider.get("name") == "latest":
                         for t in slider.get("titles", []):
-                            if isinstance(t, dict) and t.get("id") not in seen_ids:
-                                seen_ids.add(t.get("id"))
-                                latest_titles.append(t)
-                if latest_titles:
-                    series = [self._item_to_tv_series(t) for t in latest_titles if t.get("id")]
-                    series.sort(key=lambda s: (s.year or 0, s.rating or 0.0), reverse=True)
-                    return series
+                            if not isinstance(t, dict) or not t.get("id") or t.get("id") in seen_ids:
+                                continue
+                            if t.get("coming_soon") is True or ("uploaded_at" in t and t.get("uploaded_at") is None):
+                                continue
+                            seen_ids.add(t.get("id"))
+                            latest_series.append(self._item_to_tv_series(t))
             except Exception as err:
-                _LOGGER.debug("Could not fetch latest tv from /it/tv-shows: %s", err)
+                _LOGGER.debug("Could not fetch latest tv slider from /it/tv-shows: %s", err)
 
-        archive_urls = [f"{self.base_url}it/archive?type=tv&sort=uploaded_at&page={page}"]
+        archive_urls = [f"{self.base_url}it/archive?type=tv&page={page}"]
         for url in archive_urls:
             try:
                 html_text = await self._request(url)
                 page_data = self.extract_data_page(html_text)
                 props = page_data.get("props", {})
                 raw_titles = self._extract_titles_from_props(props, allow_sliders=(page == 1))
-                series = [self._item_to_tv_series(t) for t in raw_titles if t.get("id") and t.get("type") != "movie"]
-                if series:
-                    series.sort(key=lambda s: (s.year or 0, s.rating or 0.0), reverse=True)
-                    return series
+                for t in raw_titles:
+                    if not isinstance(t, dict) or not t.get("id") or t.get("type") == "movie":
+                        continue
+                    if t.get("coming_soon") is True or ("uploaded_at" in t and t.get("uploaded_at") is None):
+                        continue
+                    if t.get("id") not in seen_ids:
+                        seen_ids.add(t.get("id"))
+                        latest_series.append(self._item_to_tv_series(t))
+                if latest_series:
+                    return latest_series
             except Exception as err:
                 _LOGGER.debug("Could not fetch latest tv from %s: %s", url, err)
 
-        return []
+        return latest_series
 
     async def get_genres(self) -> list[str]:
         """Return the list of available genres."""

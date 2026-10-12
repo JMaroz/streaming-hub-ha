@@ -212,11 +212,34 @@ class AnimeStreamClient:
         if not html_text:
             return []
 
-        # 1. Match <tag-name :records="[...]" or records="[...]">
         patterns = [
-            rf'<{tag_name}[^>]*[\s:](?:records|items-json|items)=(["\'])(.*?)\1',
-            r'<layout-items[^>]*[\s:](?:items-json|items|records)=(["\'])(.*?)\1',
+            rf'<{tag_name}[^>]*[\s:](?:records|items-json|items|animes)=(["\'])(.*?)\1',
         ]
+        if tag_name in ("archivio", "layout-items"):
+            patterns.extend(
+                [
+                    r'<layout-items[^>]*[\s:](?:items-json|items|records)=(["\'])(.*?)\1',
+                    r'<archivio[^>]*[\s:](?:records|items-json|items)=(["\'])(.*?)\1',
+                ]
+            )
+
+        def _unwrap_and_deduplicate(raw_list: list[Any]) -> list[dict[str, Any]]:
+            result: list[dict[str, Any]] = []
+            seen_ids: set[Any] = set()
+            for entry in raw_list:
+                if not isinstance(entry, dict):
+                    continue
+                record = entry.get("anime") if isinstance(entry.get("anime"), dict) else entry
+                if not isinstance(record, dict):
+                    continue
+                rec_id = record.get("id")
+                if rec_id is not None:
+                    if rec_id in seen_ids:
+                        continue
+                    seen_ids.add(rec_id)
+                result.append(record)
+            return result
+
         for pat in patterns:
             match = re.search(pat, html_text, re.DOTALL)
             if match:
@@ -224,9 +247,12 @@ class AnimeStreamClient:
                 try:
                     data = json.loads(raw_json)
                     if isinstance(data, list):
-                        return data
-                    if isinstance(data, dict) and "records" in data:
-                        return data["records"]
+                        return _unwrap_and_deduplicate(data)
+                    if isinstance(data, dict):
+                        if isinstance(data.get("records"), list):
+                            return _unwrap_and_deduplicate(data["records"])
+                        if isinstance(data.get("data"), list):
+                            return _unwrap_and_deduplicate(data["data"])
                 except Exception as err:
                     _LOGGER.debug("Failed parsing embedded JSON from %s: %s", tag_name, err)
 
@@ -268,19 +294,24 @@ class AnimeStreamClient:
         return []
 
     async def get_latest_releases(self, page: int = 1) -> list[Movie | TvSeries]:
-        """Fetch latest releases from the catalog."""
+        """Fetch latest releases in chronological order from the homepage feed (with archive fallback)."""
         if not self.base_url:
             return []
 
+        home_url = f"{self.base_url}/?page={page}" if page > 1 else f"{self.base_url}/"
+        try:
+            html_text = await self._request(home_url)
+            records = self._extract_embedded_records(html_text, tag_name="layout-items")
+            if records:
+                return [self._record_to_media(r) for r in records if isinstance(r, dict)]
+        except Exception as err:
+            _LOGGER.debug("Failed fetching latest anime releases from %s: %s", home_url, err)
+
         offset = max(0, (page - 1) * 30)
         url = f"{self.base_url}/archivio?offset={offset}" if offset > 0 else f"{self.base_url}/archivio"
-
         try:
             html_text = await self._request(url)
             records = self._extract_embedded_records(html_text, tag_name="archivio")
-            if not records and page == 1:
-                # Try home layout items
-                records = self._extract_embedded_records(html_text, tag_name="layout-items")
             return [self._record_to_media(r) for r in records if isinstance(r, dict)]
         except Exception as err:
             _LOGGER.warning("Failed fetching latest anime releases (page %d): %s", page, err)
@@ -473,19 +504,62 @@ class AnimeStreamClient:
         return await self._reactive_client.resolve_stream(target_url, prefer_fhd=prefer_fhd)
 
     async def get_homepage_carousels(self) -> tuple[Movie | TvSeries | None, list[dict[str, Any]]]:
-        """Fetch homepage anime trending carousels."""
-        items = await self.get_latest_releases(page=1)
-        if not items:
+        """Fetch homepage anime latest and featured carousels."""
+        if not self.base_url:
             return None, []
 
-        hero = items[0] if items else None
-        carousel = {
-            "id": "anime_latest",
-            "title": "Ultime Uscite Anime",
-            "count": len(items),
-            "items": items,
-        }
-        return hero, [carousel]
+        carousels: list[dict[str, Any]] = []
+        hero: Movie | TvSeries | None = None
+
+        try:
+            html_text = await self._request(f"{self.base_url}/")
+            latest_records = self._extract_embedded_records(html_text, tag_name="layout-items")
+            featured_records = self._extract_embedded_records(html_text, tag_name="the-carousel")
+
+            if latest_records:
+                latest_items = [self._record_to_media(r) for r in latest_records if isinstance(r, dict)]
+                if latest_items:
+                    hero = latest_items[0]
+                    carousels.append(
+                        {
+                            "id": "anime_latest",
+                            "title": "Ultime Uscite Anime",
+                            "count": len(latest_items),
+                            "items": latest_items,
+                        }
+                    )
+
+            if featured_records:
+                featured_items = [self._record_to_media(r) for r in featured_records if isinstance(r, dict)]
+                if featured_items:
+                    if hero is None:
+                        hero = featured_items[0]
+                    carousels.append(
+                        {
+                            "id": "anime_featured",
+                            "title": "Anime in Evidenza",
+                            "count": len(featured_items),
+                            "items": featured_items,
+                        }
+                    )
+        except Exception as err:
+            _LOGGER.debug("Failed fetching homepage anime carousels from /: %s", err)
+
+        if not carousels:
+            items = await self.get_latest_releases(page=1)
+            if not items:
+                return None, []
+            hero = items[0]
+            carousels.append(
+                {
+                    "id": "anime_latest",
+                    "title": "Ultime Uscite Anime",
+                    "count": len(items),
+                    "items": items,
+                }
+            )
+
+        return hero, carousels
 
     async def close(self) -> None:
         """Close underlying client session."""
