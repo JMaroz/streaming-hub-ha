@@ -130,8 +130,9 @@ class AnimeStreamClient:
                 year = int(year_match.group(1))
 
         # Clean extraneous trailing tags
-        clean = re.sub(r"\s*[\(\[]?(?:ita|sub[- ]?ita)[\)\]]?", "", title, flags=re.IGNORECASE).strip()
+        clean = re.sub(r"\s*[\(\[]?\b(?:ita|sub[- ]?ita)\b[\)\]]?", "", title, flags=re.IGNORECASE).strip()
         clean = re.sub(r"\s*[\(\[]?(?:19\d{2}|20\d{2})[\)\]]?", "", clean).strip()
+        clean = clean.rstrip(" -:")
 
         return clean or title, year, dub_type
 
@@ -211,16 +212,15 @@ class AnimeStreamClient:
         if not html_text:
             return []
 
-        # 1. Match <tag-name records="[...]">
+        # 1. Match <tag-name :records="[...]" or records="[...]">
         patterns = [
-            rf'<{tag_name}[^>]*\srecords=["\'](.*?)["\']',
-            rf'<{tag_name}[^>]*\sitems-json=["\'](.*?)["\']',
-            r'<layout-items[^>]*\sitems-json=["\'](.*?)["\']',
+            rf'<{tag_name}[^>]*[\s:](?:records|items-json|items)=(["\'])(.*?)\1',
+            r'<layout-items[^>]*[\s:](?:items-json|items|records)=(["\'])(.*?)\1',
         ]
         for pat in patterns:
             match = re.search(pat, html_text, re.DOTALL)
             if match:
-                raw_json = html.unescape(match.group(1))
+                raw_json = html.unescape(match.group(2))
                 try:
                     data = json.loads(raw_json)
                     if isinstance(data, list):
@@ -301,14 +301,25 @@ class AnimeStreamClient:
         detail_url = f"{self.base_url}/anime/{numeric_id}-{slug}" if slug else f"{self.base_url}/anime/{numeric_id}"
         html_text = await self._request(detail_url)
 
-        # 1. Extract anime prop from <video-player anime="..." ...>
-        player_match = re.search(r'<video-player[^>]*\sanime=["\'](.*?)["\']', html_text, re.DOTALL)
+        # 1. Extract anime prop from <video-player :anime="..." or anime="..." ...>
+        player_match = re.search(r'<video-player[^>]*[\s:](?:anime|item)=(["\'])(.*?)\1', html_text, re.DOTALL)
         anime_data: dict[str, Any] = {}
         if player_match:
             try:
-                anime_data = json.loads(html.unescape(player_match.group(1)))
+                anime_data = json.loads(html.unescape(player_match.group(2)))
             except Exception as err:
                 _LOGGER.debug("Failed parsing video-player anime prop: %s", err)
+
+        # Extract optional embedded episodes prop
+        episodes_match = re.search(r'<video-player[^>]*[\s:](?:episodes)=(["\'])(.*?)\1', html_text, re.DOTALL)
+        fallback_episodes: list[dict[str, Any]] = []
+        if episodes_match:
+            try:
+                parsed_eps = json.loads(html.unescape(episodes_match.group(2)))
+                if isinstance(parsed_eps, list):
+                    fallback_episodes = parsed_eps
+            except Exception as err:
+                _LOGGER.debug("Failed parsing video-player episodes prop: %s", err)
 
         if not anime_data:
             # Fallback: search for title by ID
@@ -322,9 +333,24 @@ class AnimeStreamClient:
 
         # If it's a TV series, fetch episodes for season 1
         if isinstance(media, TvSeries):
-            ep_count = int(anime_data.get("episodes_count") or 0)
-            season = await self.get_tv_season(numeric_id, 1, total_count=ep_count)
+            ep_count = int(anime_data.get("episodes_count") or len(fallback_episodes) or 0)
+            season = await self.get_tv_season(
+                numeric_id,
+                1,
+                total_count=ep_count,
+                raw_episodes_fallback=fallback_episodes or anime_data.get("episodes"),
+            )
             media.seasons = [season]
+        elif isinstance(media, Movie):
+            season = await self.get_tv_season(
+                numeric_id,
+                1,
+                total_count=1,
+                raw_episodes_fallback=fallback_episodes or anime_data.get("episodes"),
+            )
+            if season.episodes and season.episodes[0].sources:
+                media.sources = list(season.episodes[0].sources)
+                media.source_a_url = media.sources[0].page_url
 
         return media
 
@@ -333,6 +359,7 @@ class AnimeStreamClient:
         anime_id: str | int,
         season_number: int = 1,
         total_count: int | None = None,
+        raw_episodes_fallback: list[dict[str, Any]] | None = None,
     ) -> TvSeason:
         """Fetch all episodes for an anime series via chunked info API."""
         clean_id = str(anime_id).replace("anime-", "").split("-")[0]
@@ -340,22 +367,29 @@ class AnimeStreamClient:
         if season_number > 1:
             return season
 
-        # Step 1: Probe first range to get total count if unknown
-        probe_url = f"{self.base_url}/info_api/{clean_id}/1?start_range=1&end_range=120"
-        try:
-            probe_text = await self._request(probe_url)
-            probe_data = json.loads(probe_text)
-        except Exception as err:
-            _LOGGER.debug("Initial episode probe failed for anime %s: %s", clean_id, err)
-            return season
+        raw_episodes: list[dict[str, Any]] = []
+        ep_count = total_count or 0
 
-        ep_count = total_count or int(probe_data.get("episodes_count") or 0)
-        raw_episodes: list[dict[str, Any]] = probe_data.get("episodes", [])
+        # Probe info_api unless we already have full fallback episodes
+        probe_needed = not raw_episodes_fallback or (total_count and len(raw_episodes_fallback) < total_count)
+        if probe_needed:
+            probe_url = f"{self.base_url}/info_api/{clean_id}/1?start_range=1&end_range=120"
+            try:
+                probe_text = await self._request(probe_url)
+                probe_data = json.loads(probe_text)
+                ep_count = total_count or int(probe_data.get("episodes_count") or 0)
+                raw_episodes = probe_data.get("episodes", [])
+            except Exception as err:
+                _LOGGER.debug("Initial episode probe failed for anime %s: %s", clean_id, err)
+                if raw_episodes_fallback:
+                    raw_episodes = list(raw_episodes_fallback)
+        else:
+            raw_episodes = list(raw_episodes_fallback or [])
 
-        # Step 2: Fetch subsequent batches if total exceeds 120
-        if ep_count > 120:
+        # Step 2: Fetch subsequent batches if total exceeds 120 and more needed
+        if ep_count > 120 and len(raw_episodes) < ep_count:
             tasks = []
-            for start in range(121, ep_count + 1, 120):
+            for start in range(len(raw_episodes) + 1, ep_count + 1, 120):
                 end = min(start + 119, ep_count)
                 batch_url = f"{self.base_url}/info_api/{clean_id}/1?start_range={start}&end_range={end}"
                 tasks.append(self._request(batch_url))
@@ -393,14 +427,21 @@ class AnimeStreamClient:
                 available=True,
             )
 
+            ep_title = str(ep.get("title") or ep.get("name") or f"Episodio {ep_num}")
+            if not ep_title.strip():
+                ep_title = f"Episodio {ep_num}"
+
+            ep_desc = str(ep.get("plot") or ep.get("description") or "") or None
+            ep_poster = str(ep.get("imageurl") or ep.get("image") or ep.get("thumb") or "") or None
+
             episode = TvEpisode(
                 id=f"anime-{clean_id}-e{ep_num}",
                 media_id=f"anime-{clean_id}",
                 season_number=season_number,
                 episode_number=ep_num,
-                title=f"Episodio {ep_num}",
-                description=None,
-                poster_url=None,
+                title=ep_title,
+                description=ep_desc,
+                poster_url=ep_poster,
                 sources=[source],
             )
             season.episodes.append(episode)

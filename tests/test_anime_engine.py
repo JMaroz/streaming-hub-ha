@@ -11,7 +11,7 @@ import pytest
 from streaming_hub.backend.dns_resolver import DoHResolver
 from streaming_hub.backend.engine_anime import AnimeStreamClient
 from streaming_hub.backend.engine_crawler import CrawlerStreamClient
-from streaming_hub.backend.models import Movie, TvSeries
+from streaming_hub.backend.models import Movie, ProviderSource, ResolvedMedia, TvEpisode, TvSeason, TvSeries
 from streaming_hub.backend.sources.anime_source import AnimeSource
 from streaming_hub.backend.sources.detector import SourceDetector
 from streaming_hub.backend.sources.manager import SourceManager
@@ -182,6 +182,187 @@ class TestAnimeStreamClient:
         await conn1.close()
         await conn2.close()
 
+    def test_clean_title_variations(self) -> None:
+        client = AnimeStreamClient(base_url="https://anime.local")
+        t1, _y1, d1 = client._clean_title("Attack on Titan (SUB ITA)")
+        assert t1 == "Attack on Titan"
+        assert d1 == "sub"
+
+        t2, _y2, d2 = client._clean_title("One Piece - SUB ITA")
+        assert t2 == "One Piece"
+        assert d2 == "sub"
+
+        t3, y3, d3 = client._clean_title("Jujutsu Kaisen 0 (2021) (ITA)")
+        assert t3 == "Jujutsu Kaisen 0"
+        assert y3 == 2021
+        assert d3 == "dub"
+
+        t4, _y4, d4 = client._clean_title("Dragon Ball Super: Super Hero [ITA]")
+        assert t4 == "Dragon Ball Super: Super Hero"
+        assert d4 == "dub"
+
+    @pytest.mark.asyncio
+    async def test_get_anime_details_tv_series_with_vue_props(self) -> None:
+        client = AnimeStreamClient(base_url="https://anime.local")
+        anime_record = {
+            "id": 4290,
+            "title": "Ore dake Level Up na Ken",
+            "title_eng": "Solo Leveling",
+            "slug": "solo-leveling",
+            "type": "TV",
+            "date": "2024",
+            "episodes_count": 2,
+            "dub": 0,
+            "score": "8.87",
+            "imageurl": "https://cdn.example.com/cover.png",
+            "plot": "Cacciatori e portali...",
+            "genres": [{"name": "Action"}, {"name": "Fantasy"}],
+        }
+        episodes_record = [
+            {
+                "id": 101,
+                "number": "1",
+                "title": "Io sono abituato",
+                "plot": "Jinwoo affronta il dungeon...",
+                "imageurl": "https://cdn.example.com/ep1.jpg",
+            },
+            {
+                "id": 102,
+                "number": "2",
+                "title": "Se avessi un'altra possibilità",
+                "plot": "Il re dei demoni...",
+                "imageurl": "https://cdn.example.com/ep2.jpg",
+            },
+        ]
+        escaped_anime = json.dumps(anime_record).replace('"', "&quot;")
+        escaped_eps = json.dumps(episodes_record).replace('"', "&quot;")
+        html_page = f'<video-player :anime="{escaped_anime}" :episodes="{escaped_eps}"></video-player>'
+
+        client._request = AsyncMock(return_value=html_page)
+
+        details = await client.get_anime_details("4290", slug="solo-leveling")
+
+        assert isinstance(details, TvSeries)
+        assert details.id == "anime-4290-solo-leveling"
+        assert details.title == "Solo Leveling"
+        assert details.original_title == "Ore dake Level Up na Ken"
+        assert details.year == 2024
+        assert details.rating == 8.9
+        assert details.is_anime is True
+        assert details.dub_type == "sub"
+        assert "Animazione" in details.genres
+        assert "Action" in details.genres
+        assert len(details.seasons) == 1
+
+        season = details.seasons[0]
+        assert season.number == 1
+        assert len(season.episodes) == 2
+
+        ep1 = season.episodes[0]
+        assert ep1.episode_number == 1
+        assert ep1.title == "Io sono abituato"
+        assert ep1.description == "Jinwoo affronta il dungeon..."
+        assert ep1.poster_url == "https://cdn.example.com/ep1.jpg"
+        assert len(ep1.sources) == 1
+        assert ep1.sources[0].provider_id == "anime"
+        assert ep1.sources[0].page_url == "https://anime.local/embed-url/101"
+
+    @pytest.mark.asyncio
+    async def test_get_anime_details_movie_with_sources(self) -> None:
+        client = AnimeStreamClient(base_url="https://anime.local")
+        movie_record = {
+            "id": 5500,
+            "title": "Kimetsu no Yaiba: Mugen Ressha-hen",
+            "title_eng": "Demon Slayer: Il treno Mugen",
+            "slug": "demon-slayer-mugen-train-ita",
+            "type": "Movie",
+            "date": "2020",
+            "dub": 1,
+            "score": "9.1",
+            "imageurl": "https://cdn.example.com/mugen.jpg",
+            "plot": "Tanjiro sale a bordo del treno Mugen...",
+            "genres": [{"name": "Azione"}, {"name": "Fantasy"}],
+        }
+        movie_eps = [
+            {"id": 9001, "number": "1", "title": "Film Completo"},
+        ]
+        escaped_anime = json.dumps(movie_record).replace('"', "&quot;")
+        escaped_eps = json.dumps(movie_eps).replace('"', "&quot;")
+        html_page = f'<video-player :anime="{escaped_anime}" :episodes="{escaped_eps}"></video-player>'
+
+        client._request = AsyncMock(return_value=html_page)
+
+        details = await client.get_anime_details("5500", slug="demon-slayer-mugen-train-ita")
+
+        assert isinstance(details, Movie)
+        assert details.id == "anime-5500-demon-slayer-mugen-train-ita"
+        assert "(ITA)" in details.title
+        assert details.is_anime is True
+        assert details.dub_type == "dub"
+        assert details.year == 2020
+        assert details.rating == 9.1
+        assert len(details.sources) == 1
+        assert details.sources[0].provider_id == "anime"
+        assert details.sources[0].page_url == "https://anime.local/embed-url/9001"
+        assert details.source_a_url == "https://anime.local/embed-url/9001"
+
+    @pytest.mark.asyncio
+    async def test_get_latest_releases_parsing(self) -> None:
+        client = AnimeStreamClient(base_url="https://anime.local")
+        sample_records = [
+            {
+                "id": 1,
+                "title": "Anime Series One",
+                "slug": "anime-series-one",
+                "type": "TV",
+                "dub": 0,
+                "date": "2024",
+                "score": "8.5",
+                "imageurl": "https://cdn.example.com/1.jpg",
+                "plot": "Trama serie...",
+            },
+            {
+                "id": 2,
+                "title": "Anime Movie One",
+                "slug": "anime-movie-one",
+                "type": "Movie",
+                "dub": 1,
+                "date": "2023",
+                "score": "8.0",
+                "imageurl": "https://cdn.example.com/2.jpg",
+                "plot": "Trama film...",
+            },
+        ]
+        escaped_json = json.dumps(sample_records).replace('"', "&quot;")
+        mock_html = f'<div id="app"><archivio :records="{escaped_json}"></archivio></div>'
+
+        client._request = AsyncMock(return_value=mock_html)
+        releases = await client.get_latest_releases(page=1)
+
+        assert len(releases) == 2
+        assert isinstance(releases[0], TvSeries)
+        assert releases[0].id == "anime-1-anime-series-one"
+        assert releases[0].dub_type == "sub"
+        assert isinstance(releases[1], Movie)
+        assert releases[1].id == "anime-2-anime-movie-one"
+        assert releases[1].dub_type == "dub"
+
+    @pytest.mark.asyncio
+    async def test_resolve_stream_vixcloud_flow(self) -> None:
+        client = AnimeStreamClient(base_url="https://anime.local")
+        client.get_embed_url = AsyncMock(return_value="https://vixcloud.co/embed/abc123xyz")
+        client._reactive_client.resolve_stream = AsyncMock(
+            return_value=("https://vix-content.net/playlist.m3u8", {"Referer": "https://vixcloud.co/"})
+        )
+
+        m3u8_url, headers = await client.resolve_stream("https://anime.local/embed-url/9001")
+        assert m3u8_url == "https://vix-content.net/playlist.m3u8"
+        assert headers == {"Referer": "https://vixcloud.co/"}
+        client.get_embed_url.assert_called_once_with("https://anime.local/embed-url/9001")
+        client._reactive_client.resolve_stream.assert_called_once_with(
+            "https://vixcloud.co/embed/abc123xyz", prefer_fhd=True
+        )
+
 
 class TestSourceDetectorAnime:
     """Test suite for anime engine detection."""
@@ -253,3 +434,61 @@ class TestAnimeSourceIntegration:
         assert hero.title == "Hero Anime"
         assert len(carousels) == 1
         assert carousels[0]["id"] == "anime_latest"
+
+    @pytest.mark.asyncio
+    async def test_anime_source_get_details_and_season(self) -> None:
+        anime_source = AnimeSource(base_url="https://anime.local", enabled=True)
+        sample_series = TvSeries(id="anime-123", title="Sample", catalogs=[])
+        sample_season = TvSeason(
+            number=1,
+            episodes=[
+                TvEpisode(
+                    id="anime-123-e1",
+                    media_id="anime-123",
+                    season_number=1,
+                    episode_number=1,
+                    title="Ep 1",
+                    sources=[
+                        ProviderSource(
+                            id="anime-123-1",
+                            media_id="anime-123",
+                            provider_id="anime",
+                            provider_name="Anime HLS",
+                            page_url="https://anime.local/embed-url/1",
+                        )
+                    ],
+                )
+            ],
+        )
+
+        anime_source._client.get_anime_details = AsyncMock(return_value=sample_series)
+        anime_source._client.get_tv_season = AsyncMock(return_value=sample_season)
+
+        details = await anime_source.get_details("tv", "anime-123")
+        assert "anime" in details.catalogs
+
+        season = await anime_source.get_season("anime-123", season_number=1)
+        assert len(season.episodes) == 1
+        assert season.episodes[0].sources[0].provider_id == "anime"
+
+    @pytest.mark.asyncio
+    async def test_anime_source_resolve_stream(self) -> None:
+        anime_source = AnimeSource(base_url="https://anime.local", enabled=True)
+        source = ProviderSource(
+            id="anime-1-10",
+            media_id="anime-1",
+            provider_id="anime",
+            provider_name="Anime HLS",
+            page_url="https://anime.local/embed-url/10",
+        )
+        anime_source._client.resolve_stream = AsyncMock(
+            return_value=("https://vix-content.net/master.m3u8", {"User-Agent": "Test"})
+        )
+
+        resolved = await anime_source.resolve_stream(source)
+        assert isinstance(resolved, ResolvedMedia)
+        assert resolved.url == "https://vix-content.net/master.m3u8"
+        assert resolved.stream_format == "hls"
+        assert resolved.provider_id == "anime"
+        assert resolved.headers == {"User-Agent": "Test"}
+
