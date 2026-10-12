@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.2](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.1...v3.0.2) (2026-10-12)
+
+
+### Bug Fixes
+
+* **catalog:** expand carousels and latest feeds ([cd77884](https://github.com/JMaroz/streaming-hub-ha/commit/cd7788444040e217999eae3a43c81ccb2e198d39))
+
 ## [3.0.1](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.0...v3.0.1) (2026-10-12)
 
 
