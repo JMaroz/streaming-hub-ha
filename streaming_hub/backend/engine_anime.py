@@ -60,8 +60,8 @@ class AnimeStreamClient:
         if self._session is None or self._session.closed:
             connector = None
             if self._custom_dns and self._custom_dns != "system":
-                self._resolver = DoHResolver(provider=self._custom_dns)
-                connector = aiohttp.TCPConnector(resolver=self._resolver)
+                self._resolver = DoHResolver(mode=self._custom_dns)
+                connector = aiohttp.TCPConnector(resolver=self._resolver, ssl=False)
             self._session = aiohttp.ClientSession(
                 connector=connector,
                 timeout=aiohttp.ClientTimeout(total=self._timeout),
@@ -450,4 +450,6 @@ class AnimeStreamClient:
         """Close underlying client session."""
         if not self._custom_session and self._session and not self._session.closed:
             await self._session.close()
+        if self._resolver:
+            await self._resolver.close()
         await self._reactive_client.close()

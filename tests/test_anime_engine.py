@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 
+from streaming_hub.backend.dns_resolver import DoHResolver
 from streaming_hub.backend.engine_anime import AnimeStreamClient
+from streaming_hub.backend.engine_crawler import CrawlerStreamClient
 from streaming_hub.backend.models import Movie, TvSeries
 from streaming_hub.backend.sources.anime_source import AnimeSource
 from streaming_hub.backend.sources.detector import SourceDetector
@@ -139,6 +142,45 @@ class TestAnimeStreamClient:
         assert season.episodes[0].id == "anime-4290-e1"
         assert len(season.episodes[0].sources) == 1
         assert season.episodes[0].sources[0].provider_id == "anime"
+
+    @pytest.mark.asyncio
+    async def test_get_session_custom_doh(self) -> None:
+        client = AnimeStreamClient(base_url="https://anime.local", custom_dns="cloudflare")
+        session = await client._get_session()
+        assert session is not None
+        assert client._resolver is not None
+        assert client._resolver.mode == "cloudflare"
+        assert isinstance(session.connector, aiohttp.TCPConnector)
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_crawler_get_session_custom_doh(self) -> None:
+        crawler = CrawlerStreamClient(base_url="https://crawler.local", custom_dns="google")
+        session = await crawler._get_session()
+        assert session is not None
+        assert crawler._resolver is not None
+        assert crawler._resolver.mode == "google"
+        assert isinstance(session.connector, aiohttp.TCPConnector)
+        await crawler.close()
+
+    @pytest.mark.asyncio
+    async def test_doh_resolver_provider_and_connector_compatibility(self) -> None:
+        # Legacy/alternate provider keyword argument
+        res_provider = DoHResolver(provider="quad9")
+        assert res_provider.mode == "quad9"
+        conn1 = res_provider.get_connector()
+        assert isinstance(conn1, aiohttp.TCPConnector)
+
+        # Standard mode argument
+        res_mode = DoHResolver(mode="cloudflare")
+        assert res_mode.mode == "cloudflare"
+        conn2 = res_mode.get_connector(ssl=True)
+        assert isinstance(conn2, aiohttp.TCPConnector)
+
+        await res_provider.close()
+        await res_mode.close()
+        await conn1.close()
+        await conn2.close()
 
 
 class TestSourceDetectorAnime:

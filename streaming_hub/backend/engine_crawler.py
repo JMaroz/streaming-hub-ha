@@ -65,7 +65,7 @@ class CrawlerStreamClient:
 
         connector = None
         if self.custom_dns and self.custom_dns != "system":
-            self._resolver = DoHResolver(provider=self.custom_dns)
+            self._resolver = DoHResolver(mode=self.custom_dns)
             connector = self._resolver.get_connector()
 
         headers = {

@@ -1,38 +1,30 @@
-# Handoff: Cast Next Episode Autoplay with Hybrid Notifications & Server-Side Countdown
+# Handoff: Fix Anime and Crawler DoHResolver Keyword Argument & Connector Error
 
 ## Current State
-- Completely resolved the issue where Cast playback failed to advance to the next episode on TVs (`media_player.tpm191e`).
-- Migrated the next-episode autoplay, countdown, and transition logic to the backend (`ha_client.py`), rendering playback completely independent of mobile sleep/backgrounding states.
-- Implemented a hybrid notification system:
-  - **In-App Banner**: Integrated in the frontend Cast bar with live countdown, "▶ Riproduci Ora" and "⏹ Annulla" buttons, and automatic episode title/badge refresh.
-  - **Actionable Push Notification**: Dispatched via Home Assistant `notify.notify` broadcast with `STREAMING_HUB_PLAY_NEXT` and `STREAMING_HUB_STOP` actions.
-  - **Home Assistant WebSocket Event Listener**: Subscribes to `mobile_app_notification_action` for instant remote approval or cancellation without opening the app.
-- Enforced strict trigger rules (no arbitrary percentage triggers):
-  - Triggers on end-credits metadata (`outro.start`) via SkipDB when available, skipping the rest of the credits at countdown expiry (Netflix-style).
-  - Triggers on playback completion (`idle` state after playing) when end-credits metadata is absent.
-- Fixed a bug in `castToDevice` where explicit season/episode parameters were overridden by the global UI selection state (`state.selectedItem = null` upon modal close), causing autoplay to register episode IDs (e.g. `sc-13083_s1e9`) as standalone "movies" in watch history.
-- Added self-healing and defensive normalization in `database.py`: automatically purges and filters out spurious movie records with episode IDs and normalizes incoming `media_id` into canonical series IDs.
-- Fixed a pre-existing integer parsing error in `metadata.py` for runtimes returned as strings (e.g. `'148 min'`).
-- Added full unit test coverage in `tests/test_cast_next_episode.py`. All tests in the project pass with 0 regressions.
+- Completely resolved the issue causing the anime provider (and crawler provider) to fail during startup and catalog fetch: `DoHResolver.__init__() got an unexpected keyword argument 'provider'`.
+- Updated `DoHResolver.__init__` in `dns_resolver.py` to accept both `mode` and `provider` (as a backward-compatible keyword argument), ensuring any calling pattern works seamlessly.
+- Added `get_connector(ssl: bool | None = False)` to `DoHResolver` to provide a standard `aiohttp.TCPConnector` configured with the DoH resolver and SSL verification toggle.
+- Standardized `AnimeStreamClient._get_session` to pass `mode=self._custom_dns` and use `ssl=False` on the TCPConnector, matching `engine_reactive.py`.
+- Standardized `CrawlerStreamClient._get_session` to use `mode=self.custom_dns` and leverage `self._resolver.get_connector()`.
+- Ensured `AnimeStreamClient.close()` properly cleans up `self._resolver`.
+- Added comprehensive unit tests in `tests/test_anime_engine.py` covering DoH session initialization for both anime and crawler clients, and parameter compatibility. All 94 project tests pass with 0 regressions.
 
 ## Relevant Files
-- `streaming_hub/backend/database.py`: Normalization of episode-specific `media_id` in `_save_watch_progress_sync`, auto-healing purge of legacy corrupted movie entries in `_migrate_and_heal_sync`, and defensive filtering in `_get_continue_watching_sync`.
-- `streaming_hub/backend/ha_client.py`: Server-side countdown worker (`_run_next_episode_countdown`), prefetching (`_prepare_next_episode`), actionable notification dispatch (`send_next_episode_notification`), WebSocket event listener (`mobile_app_notification_action`), and outro/idle trigger handling in playback tracker.
-- `streaming_hub/backend/main.py`: Connected next episode fetcher, skip segments fetcher, and autoplay transition handler; defensive normalization of `media_id` and title in `/api/cast`; added `POST /api/cast/next-episode/action` and event listener lifecycle hooks.
-- `streaming_hub/frontend/js/app.js`: Real-time banner countdown synchronization with server, action dispatches, and explicit options handling in `castToDevice`.
-- `tests/test_cast_next_episode.py`: Comprehensive unit tests for metadata prefetching, countdown, action handling, and watch history progress normalization.
-- `docs/plans/2026-10-10_cast_next_episode_autoplay.md`: Plan checklist fully completed.
+- `streaming_hub/backend/dns_resolver.py`: Added `provider` parameter support to `DoHResolver.__init__` and implemented `get_connector()`.
+- `streaming_hub/backend/engine_anime.py`: Updated `_get_session()` to use `mode` and `ssl=False`; closed resolver in `close()`.
+- `streaming_hub/backend/engine_crawler.py`: Updated `_get_session()` to use `mode=self.custom_dns`.
+- `tests/test_anime_engine.py`: Added unit tests for DoH session creation in anime/crawler clients and resolver parameter compatibility.
+- `docs/plans/2026-10-12_fix_anime_doh_resolver.md`: Plan checklist fully completed.
 
 ## Next Steps
-- Verify on live Home Assistant setup with physical Cast device (Philips TV `media_player.tpm191e`).
+- Rebuild or restart the Streaming Hub Home Assistant add-on to test the anime provider live at `http://192.168.1.67:8123/config/app/f94709c2_streaming_hub/logs`.
 - Suggested Conventional Commit:
   ```bash
-  git add streaming_hub/backend/database.py streaming_hub/backend/proxy.py tests/test_cast_next_episode.py tests/test_tmdb_sync.py docs/HANDOFF.md
-  git commit -m "fix(cast): normalize watch history media id and purge duplicate continue watching items"
+  git add streaming_hub/backend/dns_resolver.py streaming_hub/backend/engine_anime.py streaming_hub/backend/engine_crawler.py tests/test_anime_engine.py docs/plans/2026-10-12_fix_anime_doh_resolver.md docs/HANDOFF.md
+  git commit -m "fix(anime): support provider keyword and add connector helper in DoHResolver"
   ```
 
 ## Useful Commands
-- Run Cast next episode tests: `.venv/bin/pytest tests/test_cast_next_episode.py -v`
+- Run anime and crawler tests: `.venv/bin/pytest tests/test_anime_engine.py -v`
 - Run full test suite: `.venv/bin/pytest`
-- Run linting: `.venv/bin/ruff check .`
-
+- Run linter: `.venv/bin/ruff check .`

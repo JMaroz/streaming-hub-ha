@@ -10,6 +10,7 @@ import socket
 from typing import Any
 import urllib.request
 
+import aiohttp
 from aiohttp.abc import AbstractResolver
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,9 +33,15 @@ _CACHE_TTL = timedelta(hours=12)
 class DoHResolver(AbstractResolver):
     """Custom aiohttp resolver supporting DNS-over-HTTPS with concurrent race and Quad9."""
 
-    def __init__(self, mode: str = DNS_DEFAULT) -> None:
-        """Initialize DoH resolver."""
-        self.mode = mode
+    def __init__(self, mode: str = DNS_DEFAULT, provider: str | None = None) -> None:
+        """Initialize DoH resolver with mode or legacy provider parameter."""
+        self.mode = provider if provider is not None else mode
+
+    def get_connector(self, ssl: bool | None = False) -> aiohttp.TCPConnector:
+        """Return an aiohttp TCPConnector configured with this resolver."""
+        if ssl is not None:
+            return aiohttp.TCPConnector(resolver=self, ssl=ssl)
+        return aiohttp.TCPConnector(resolver=self)
 
     async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET) -> list[dict[str, Any]]:
         """Resolve a host name to a list of socket address dictionaries."""
