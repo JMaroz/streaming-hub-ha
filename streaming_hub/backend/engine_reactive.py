@@ -591,15 +591,16 @@ class ReactiveStreamClient:
 
         async def _fetch_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
             try:
-                resp_text = await self._request(
-                    url,
-                    headers=api_headers,
-                    method="POST",
-                    data={"sliders": batch},
-                )
-                parsed = json.loads(resp_text)
-                if isinstance(parsed, list):
-                    return [s for s in parsed if isinstance(s, dict)]
+                async with asyncio.timeout(6):
+                    resp_text = await self._request(
+                        url,
+                        headers=api_headers,
+                        method="POST",
+                        data={"sliders": batch},
+                    )
+                    parsed = json.loads(resp_text)
+                    if isinstance(parsed, list):
+                        return [s for s in parsed if isinstance(s, dict)]
             except Exception as err:
                 _LOGGER.debug("Dynamic sliders batch fetch failed: %s", err)
             return []
@@ -744,17 +745,14 @@ class ReactiveStreamClient:
                             available_map[pref.lower()] for pref in preferred_genres if pref.lower() in available_map
                         ]
                         for g in available_genres:
-                            if g not in selected_genres and len(selected_genres) < 15:
+                            if g not in selected_genres and len(selected_genres) < 4:
                                 selected_genres.append(g)
 
                         dynamic_specs: list[dict[str, Any]] = [
                             {"name": "new-episodes", "title_type": "tv", "genre": None},
                             {"name": "top10", "title_type": "movie", "genre": None},
                             {"name": "top10", "title_type": "tv", "genre": None},
-                            *(
-                                {"name": "genre", "title_type": None, "genre": g_name}
-                                for g_name in selected_genres[:15]
-                            ),
+                            *({"name": "genre", "title_type": None, "genre": g_name} for g_name in selected_genres[:4]),
                         ]
 
                         locale = str(props.get("locale") or "it")
@@ -860,25 +858,26 @@ class ReactiveStreamClient:
             except Exception as err:
                 _LOGGER.debug("Could not fetch latest movies slider from /it/movies: %s", err)
 
-        archive_urls = [f"{self.base_url}it/archive?type=movie&page={page}"]
-        for url in archive_urls:
-            try:
-                html_text = await self._request(url)
-                page_data = self.extract_data_page(html_text)
-                props = page_data.get("props", {})
-                raw_titles = self._extract_titles_from_props(props, allow_sliders=(page == 1))
-                for t in raw_titles:
-                    if not isinstance(t, dict) or not t.get("id") or t.get("type", "movie") == "tv":
-                        continue
-                    if t.get("coming_soon") is True or ("uploaded_at" in t and t.get("uploaded_at") is None):
-                        continue
-                    if t.get("id") not in seen_ids:
-                        seen_ids.add(t.get("id"))
-                        latest_movies.append(self._item_to_movie(t))
-                if latest_movies:
-                    return latest_movies
-            except Exception as err:
-                _LOGGER.debug("Could not fetch latest movies from %s: %s", url, err)
+        if page > 1 or len(latest_movies) < 12:
+            archive_urls = [f"{self.base_url}it/archive?type=movie&page={page}"]
+            for url in archive_urls:
+                try:
+                    html_text = await self._request(url)
+                    page_data = self.extract_data_page(html_text)
+                    props = page_data.get("props", {})
+                    raw_titles = self._extract_titles_from_props(props, allow_sliders=(page == 1))
+                    for t in raw_titles:
+                        if not isinstance(t, dict) or not t.get("id") or t.get("type", "movie") == "tv":
+                            continue
+                        if t.get("coming_soon") is True or ("uploaded_at" in t and t.get("uploaded_at") is None):
+                            continue
+                        if t.get("id") not in seen_ids:
+                            seen_ids.add(t.get("id"))
+                            latest_movies.append(self._item_to_movie(t))
+                    if latest_movies:
+                        return latest_movies
+                except Exception as err:
+                    _LOGGER.debug("Could not fetch latest movies from %s: %s", url, err)
 
         return latest_movies
 
@@ -910,25 +909,26 @@ class ReactiveStreamClient:
             except Exception as err:
                 _LOGGER.debug("Could not fetch latest tv slider from /it/tv-shows: %s", err)
 
-        archive_urls = [f"{self.base_url}it/archive?type=tv&page={page}"]
-        for url in archive_urls:
-            try:
-                html_text = await self._request(url)
-                page_data = self.extract_data_page(html_text)
-                props = page_data.get("props", {})
-                raw_titles = self._extract_titles_from_props(props, allow_sliders=(page == 1))
-                for t in raw_titles:
-                    if not isinstance(t, dict) or not t.get("id") or t.get("type") == "movie":
-                        continue
-                    if t.get("coming_soon") is True or ("uploaded_at" in t and t.get("uploaded_at") is None):
-                        continue
-                    if t.get("id") not in seen_ids:
-                        seen_ids.add(t.get("id"))
-                        latest_series.append(self._item_to_tv_series(t))
-                if latest_series:
-                    return latest_series
-            except Exception as err:
-                _LOGGER.debug("Could not fetch latest tv from %s: %s", url, err)
+        if page > 1 or len(latest_series) < 12:
+            archive_urls = [f"{self.base_url}it/archive?type=tv&page={page}"]
+            for url in archive_urls:
+                try:
+                    html_text = await self._request(url)
+                    page_data = self.extract_data_page(html_text)
+                    props = page_data.get("props", {})
+                    raw_titles = self._extract_titles_from_props(props, allow_sliders=(page == 1))
+                    for t in raw_titles:
+                        if not isinstance(t, dict) or not t.get("id") or t.get("type") == "movie":
+                            continue
+                        if t.get("coming_soon") is True or ("uploaded_at" in t and t.get("uploaded_at") is None):
+                            continue
+                        if t.get("id") not in seen_ids:
+                            seen_ids.add(t.get("id"))
+                            latest_series.append(self._item_to_tv_series(t))
+                    if latest_series:
+                        return latest_series
+                except Exception as err:
+                    _LOGGER.debug("Could not fetch latest tv from %s: %s", url, err)
 
         return latest_series
 

@@ -1417,21 +1417,25 @@
         state.catalogItems = results;
         renderGrid(state.catalogItems);
         if (isHome) {
-          const homeData = homePromise ? await homePromise : null;
-          if (homeData && homeData.carousels && homeData.carousels.length > 0) {
-            renderHomeCarousels(homeData.carousels);
-            if (homeData.hero) {
-              updateHero(homeData.hero);
-            } else if (state.catalogItems.length > 0) {
-              updateHero(state.catalogItems[0]);
-            }
+          if (state.catalogItems.length > 0) {
+            updateHero(state.catalogItems[0]);
           } else {
-            if (elements.homeCarouselsSection) elements.homeCarouselsSection.classList.add("hidden");
-            if (state.catalogItems.length > 0) {
-              updateHero(state.catalogItems[0]);
-            } else {
-              elements.heroSection.classList.add("hidden");
-            }
+            elements.heroSection.classList.add("hidden");
+          }
+
+          if (homePromise) {
+            homePromise.then((homeData) => {
+              // Ensure user is still on browse home view
+              if (state.activeMode !== "browse" || state.activeType !== "all") return;
+              if (homeData && homeData.carousels && homeData.carousels.length > 0) {
+                renderHomeCarousels(homeData.carousels);
+                if (homeData.hero) {
+                  updateHero(homeData.hero);
+                }
+              } else if (elements.homeCarouselsSection) {
+                elements.homeCarouselsSection.classList.add("hidden");
+              }
+            });
           }
         } else {
           elements.heroSection.classList.add("hidden");

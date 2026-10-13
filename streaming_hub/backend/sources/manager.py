@@ -121,15 +121,17 @@ class SourceManager:
         combined_carousels: list[dict[str, Any]] = []
         primary_hero: Movie | TvSeries | None = None
 
-        for src in carousel_sources:
-            try:
-                hero, carousels = await src.get_carousels()
-                if not primary_hero and hero:
-                    primary_hero = hero
-                if carousels:
-                    combined_carousels.extend(carousels)
-            except Exception as err:
-                _LOGGER.warning("Error fetching home carousels from %s: %s", src.source_id, err)
+        tasks = [self._safe_call(src.get_carousels(), f"{src.source_id}:get_carousels") for src in carousel_sources]
+        results = await asyncio.gather(*tasks)
+
+        for res in results:
+            if not res or not isinstance(res, (tuple, list)) or len(res) != 2:
+                continue
+            hero, carousels = res
+            if not primary_hero and hero:
+                primary_hero = hero
+            if carousels and isinstance(carousels, list):
+                combined_carousels.extend(carousels)
 
         return primary_hero, combined_carousels
 
