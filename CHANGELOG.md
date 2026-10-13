@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.4](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.3...v3.0.4) (2026-10-13)
+
+
+### Bug Fixes
+
+* **catalog:** improve home loading performance ([d4f8f72](https://github.com/JMaroz/streaming-hub-ha/commit/d4f8f728f592f5771decbddd2abdd07bef22a572))
+
 ## [3.0.3](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.2...v3.0.3) (2026-10-13)
 
 
