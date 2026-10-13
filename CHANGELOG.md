@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.3](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.2...v3.0.3) (2026-10-13)
+
+
+### Bug Fixes
+
+* **catalog:** preserve anime sequels and variants ([4a878da](https://github.com/JMaroz/streaming-hub-ha/commit/4a878daed4ebe7b589c242a1ec2105be5cbe5bce))
+
 ## [3.0.2](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.1...v3.0.2) (2026-10-12)
 
 
