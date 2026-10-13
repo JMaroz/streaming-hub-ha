@@ -1,30 +1,29 @@
 # Handoff State — Streaming Hub HA
 
 ## Current State
-Completed Root-cause Evaluation & Analysis (REA) and implemented the fix for homepage carousels expansion and chronological "Ultimi Arrivi" ordering across both `ReactiveStreamClient` (`StreamingCommunity`) and `AnimeStreamClient` (`AnimeUnity`):
-- **Dynamic Homepage Carousels (`StreamingCommunity`)**: Added `_fetch_dynamic_sliders()` in `ReactiveStreamClient` to query `POST /api/sliders/fetch?lang=it` in parallel batches of $\le 6$ items (respecting Laravel's `max:6` validation rule). Expanded `get_homepage_carousels()` from 3 initial Inertia sliders to 21 carousels (`trending`, `latest`, `top10`, `new-episodes`, `top10_movie`, `top10_tv`, plus 15 genre sliders).
-- **Chronological "Ultimi Arrivi" (`StreamingCommunity`)**: Removed forced `.sort(key=lambda m: (m.year or 0, m.rating or 0.0), reverse=True)` and `"trending"` slider mixing from `get_latest_movies()` and `get_latest_tv()`. Removed invalid `&sort=uploaded_at` query parameter on `/it/archive` URLs so `/it/archive?type=movie|tv&page={page}` returns the 60 chronological titles per page instead of redirecting to `Home/Home`.
-- **Anime Homepage & Latest Releases (`AnimeUnity`)**: Updated `AnimeStreamClient._extract_embedded_records()` to support `animes="..."` attributes, unwrap nested `item["anime"]` episode objects from `<layout-items>`, and deduplicate by anime ID. Switched `get_latest_releases()` and `get_homepage_carousels()` from the alphabetical `/archivio` (`Lista A-Z`) to the chronological homepage `/?page={page}` (`Ultime Uscite Anime` + `Anime in Evidenza`).
-- **Verification**: All 105 unit tests pass (`pytest`), `ruff check` and `ruff format --check` pass with 0 issues, and live empirical verification against `streamingcommunityz.shiksha` and `animeunity.so` confirmed 21 + 2 carousels and genuine chronological latest releases.
+Fixed issue where anime split-cours/sequels (e.g. `GATE Part 2` / `166-gate-part-2`) and SUB/DUB distinct audio releases were erroneously swallowed and hidden during global catalog searches:
+- **Root Cause**: `CatalogMerger.titles_match` matched multi-part titles (`words1.issubset(words2)`) when difference only contained sequel tokens/numbers (e.g. `Part 2`) within a 1-year window, merging them into season 1. Additionally, `CatalogMerger.is_same_media` did not prevent merging distinct items with different IDs from the same catalog source or distinct anime audio releases.
+- **Resolution**:
+  - Added `_SEQUEL_MARKERS` and numeric difference checks in `CatalogMerger.titles_match` so sequels, parts, cour divisions, and numeric increments are never matched as duplicate titles.
+  - Updated `CatalogMerger.is_same_media` to protect items from the same provider prefix (e.g. `anime-15` vs `anime-166`) and preserve distinct `dub_type` audio releases.
+- **Verification**: All 107 unit tests pass (`python3.14 -m pytest`), including new tests for `GATE Part 1` vs `GATE Part 2` and SUB/DUB preservation. `ruff check` and `ruff format` pass with 0 issues.
 
 ## Relevant Files
-- `streaming_hub/backend/engine_reactive.py`: Added `_fetch_dynamic_sliders()`, expanded `get_homepage_carousels()`, and fixed chronological ordering and `/it/archive` URLs in `get_latest_movies()` / `get_latest_tv()`.
-- `streaming_hub/backend/engine_anime.py`: Enhanced `_extract_embedded_records()` (`animes` attribute, `item["anime"]` unwrapping, ID deduplication) and updated `get_latest_releases()` and `get_homepage_carousels()` to use `/` instead of alphabetical `/archivio`.
-- `tests/test_home_carousels.py`: Added unit tests for dynamic slider batching ($\le 6$), carousel expansion, and chronological order preservation in `get_latest_movies()`.
-- `tests/test_anime_engine.py`: Added unit tests for `/?page=1` chronological episode unwrapping/deduplication and dual homepage carousels (`anime_latest` + `anime_featured`).
-- `docs/plans/2026-10-12_home_carousels_and_latest_fix.md`: Structured implementation and verification plan (completed).
+- `streaming_hub/backend/utils.py`: Added `_SEQUEL_MARKERS`, numeric token checks in `titles_match`, same-source ID protection and dub type separation in `is_same_media`.
+- `tests/test_anime_engine.py`: Added `test_source_manager_search_preserves_anime_sequels_and_parts` and `test_source_manager_search_preserves_sub_and_dub_anime_releases`.
+- `docs/plans/2026-10-13_fix_catalog_merger_anime_sequels.md`: Structured plan and verification tracking for this task.
 
 ## Next Steps
-1. Commit the changes using Conventional Commits (`fix(catalog): expand dynamic home carousels and restore chronological latest releases`).
-2. Restart or rebuild the local Home Assistant add-on instance (`http://192.168.1.67:8099`) to deploy the updated backend code and clear the in-memory `TTLCache`.
-3. Optionally expose genre customization or user-selectable carousel ordering in settings if needed in the future.
+1. Suggest or create a conventional commit (`fix(catalog): prevent CatalogMerger from deduplicating anime sequels and audio variants`).
+2. Rebuild/restart the add-on container in Home Assistant to load the updated `CatalogMerger` logic.
 
 ## Useful Commands
 ```bash
 # Run unit tests
-.venv/bin/pytest -q
+python3.14 -m pytest tests/test_anime_engine.py
+python3.14 -m pytest
 
-# Run linter and formatter checks
-.venv/bin/ruff check streaming_hub/backend/engine_reactive.py streaming_hub/backend/engine_anime.py tests/test_home_carousels.py tests/test_anime_engine.py
-.venv/bin/ruff format --check streaming_hub/backend/engine_reactive.py streaming_hub/backend/engine_anime.py tests/test_home_carousels.py tests/test_anime_engine.py
+# Run linter and formatting checks
+python3.14 -m ruff check streaming_hub/backend/utils.py tests/test_anime_engine.py
+python3.14 -m ruff format --check streaming_hub/backend/utils.py tests/test_anime_engine.py
 ```

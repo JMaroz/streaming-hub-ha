@@ -72,6 +72,47 @@ def genre_matches(target_genre: str, item_genres: list[str]) -> bool:
     return False
 
 
+# Markers that distinguish seasons, parts, sequels, or spinoffs
+_SEQUEL_MARKERS = {
+    "part",
+    "parte",
+    "season",
+    "stagione",
+    "cour",
+    "arc",
+    "arco",
+    "vol",
+    "volume",
+    "movie",
+    "film",
+    "special",
+    "speciale",
+    "ova",
+    "oav",
+    "ona",
+    "sequel",
+    "prequel",
+    "final",
+    "finale",
+    "act",
+    "atto",
+    "chapter",
+    "capitolo",
+    "climax",
+    "s1",
+    "s2",
+    "s3",
+    "s4",
+    "s5",
+    "s6",
+    "s7",
+    "s8",
+    "s9",
+    "sp",
+    "tv",
+}
+
+
 class CatalogMerger:
     """Handles cross-catalog matching, metadata enrichment, and source unification."""
 
@@ -135,6 +176,10 @@ class CatalogMerger:
         words2 = set(n2.split())
         if len(words1) >= 2 and len(words2) >= 2:
             if words1.issubset(words2) or words2.issubset(words1):
+                diff = words1 ^ words2
+                # If difference contains numbers, digits, or sequel/part markers, they are NOT the same media
+                if any(any(c.isdigit() for c in w) for w in diff) or any(w in _SEQUEL_MARKERS for w in diff):
+                    return False
                 if year1 and year2:
                     return abs(year1 - year2) <= 1
 
@@ -143,6 +188,23 @@ class CatalogMerger:
     @classmethod
     def is_same_media(cls, m1: Movie | TvSeries, m2: Movie | TvSeries) -> bool:
         """Determine if two Movie or TvSeries objects represent the same piece of media."""
+        if m1.id == m2.id:
+            return True
+
+        # Items originating from the same provider with different IDs represent distinct catalog entries
+        # (e.g. anime-15 vs anime-166, or sub vs dub anime-4290 vs anime-4500)
+        prefix1 = m1.id.split("-", 1)[0] if "-" in m1.id else ""
+        prefix2 = m2.id.split("-", 1)[0] if "-" in m2.id else ""
+        if prefix1 and prefix2 and prefix1 == prefix2:
+            return False
+
+        # Do not merge specialized anime catalog items with non-anime or different audio releases
+        if getattr(m1, "is_anime", False) != getattr(m2, "is_anime", False):
+            return False
+        if getattr(m1, "dub_type", None) and getattr(m2, "dub_type", None):
+            if m1.dub_type != m2.dub_type:
+                return False
+
         if m1.tmdb_id and m2.tmdb_id:
             return str(m1.tmdb_id) == str(m2.tmdb_id)
 
@@ -189,7 +251,11 @@ class CatalogMerger:
     @classmethod
     def merge_movie(cls, existing: Movie, incoming: Movie) -> Movie:
         """Merge an incoming Movie record into an existing Movie record."""
-        if (not existing.title or existing.title.strip() in ("", "Senza Titolo")) and incoming.title and incoming.title.strip() not in ("", "Senza Titolo"):
+        if (
+            (not existing.title or existing.title.strip() in ("", "Senza Titolo"))
+            and incoming.title
+            and incoming.title.strip() not in ("", "Senza Titolo")
+        ):
             existing.title = incoming.title
 
         all_catalogs = list(dict.fromkeys(existing.catalogs + incoming.catalogs))
@@ -229,7 +295,11 @@ class CatalogMerger:
     @classmethod
     def merge_tv_series(cls, existing: TvSeries, incoming: TvSeries) -> TvSeries:
         """Merge an incoming TvSeries record into an existing TvSeries record."""
-        if (not existing.title or existing.title.strip() in ("", "Senza Titolo")) and incoming.title and incoming.title.strip() not in ("", "Senza Titolo"):
+        if (
+            (not existing.title or existing.title.strip() in ("", "Senza Titolo"))
+            and incoming.title
+            and incoming.title.strip() not in ("", "Senza Titolo")
+        ):
             existing.title = incoming.title
 
         all_catalogs = list(dict.fromkeys(existing.catalogs + incoming.catalogs))

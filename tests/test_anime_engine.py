@@ -562,3 +562,83 @@ class TestAnimeSourceIntegration:
         assert resolved.stream_format == "hls"
         assert resolved.provider_id == "anime"
         assert resolved.headers == {"User-Agent": "Test"}
+
+    @pytest.mark.asyncio
+    async def test_source_manager_search_preserves_anime_sequels_and_parts(self) -> None:
+        """Test that search does not accidentally merge split-cours/sequels (e.g., Gate Part 1 and Gate Part 2)."""
+        source_manager = SourceManager()
+        anime_source = AnimeSource(base_url="https://anime.local", enabled=True, name="Test Anime")
+
+        gate_s1 = TvSeries(
+            id="anime-15-gate",
+            title="GATE",
+            original_title="Gate: Jieitai Kanochi nite, Kaku Tatakaeri",
+            year=2015,
+            is_anime=True,
+            dub_type="sub",
+            catalogs=["anime"],
+        )
+        gate_s2 = TvSeries(
+            id="anime-166-gate-part-2",
+            title="GATE Part 2",
+            original_title="Gate: Jieitai Kanochi nite, Kaku Tatakaeri Part 2",
+            year=2016,
+            is_anime=True,
+            dub_type="sub",
+            catalogs=["anime"],
+        )
+        steins_gate = TvSeries(
+            id="anime-50-steins-gate",
+            title="Steins;Gate",
+            original_title="Steins;Gate",
+            year=2011,
+            is_anime=True,
+            dub_type="sub",
+            catalogs=["anime"],
+        )
+
+        anime_source._client.search = AsyncMock(return_value=[gate_s1, gate_s2, steins_gate])
+        source_manager.register_source(anime_source)
+
+        results = await source_manager.search("gate")
+        result_ids = [r.id for r in results]
+
+        assert len(results) == 3
+        assert "anime-15-gate" in result_ids
+        assert "anime-166-gate-part-2" in result_ids
+        assert "anime-50-steins-gate" in result_ids
+
+    @pytest.mark.asyncio
+    async def test_source_manager_search_preserves_sub_and_dub_anime_releases(self) -> None:
+        """Test that SUB ITA and DUB ITA anime with distinct catalog IDs are both preserved."""
+        source_manager = SourceManager()
+        anime_source = AnimeSource(base_url="https://anime.local", enabled=True, name="Test Anime")
+
+        solo_sub = TvSeries(
+            id="anime-4290-solo-leveling",
+            title="Solo Leveling",
+            original_title="Ore dake Level Up na Ken",
+            year=2024,
+            is_anime=True,
+            dub_type="sub",
+            catalogs=["anime"],
+        )
+        solo_dub = TvSeries(
+            id="anime-4500-solo-leveling-ita",
+            title="Solo Leveling (ITA)",
+            original_title="Ore dake Level Up na Ken",
+            year=2024,
+            is_anime=True,
+            dub_type="dub",
+            catalogs=["anime"],
+        )
+
+        anime_source._client.search = AsyncMock(return_value=[solo_sub, solo_dub])
+        source_manager.register_source(anime_source)
+
+        results = await source_manager.search("solo leveling")
+        result_ids = [r.id for r in results]
+
+        assert len(results) == 2
+        assert "anime-4290-solo-leveling" in result_ids
+        assert "anime-4500-solo-leveling-ita" in result_ids
