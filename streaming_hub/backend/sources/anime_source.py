@@ -48,7 +48,7 @@ class AnimeSource(BaseSource):
     @property
     def supported_types(self) -> list[str]:
         """List of media types supported by this source."""
-        return ["tv", "movie", "anime"]
+        return ["anime"]
 
     @property
     def is_enabled(self) -> bool:

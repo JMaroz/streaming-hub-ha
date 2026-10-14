@@ -376,14 +376,32 @@ class TestAnimeStreamClient:
 
         client._request = AsyncMock(return_value=mock_html)
         releases = await client.get_latest_releases(page=1)
-
         assert len(releases) == 2
         assert releases[0].title == "One Piece"
         assert releases[1].title == "Psyren"
 
     @pytest.mark.asyncio
-    async def test_get_homepage_carousels_extracts_latest_and_featured(self) -> None:
-        """Test that get_homepage_carousels returns both Ultime Uscite Anime and Anime in Evidenza from homepage."""
+    async def test_request_timeout_enforced(self) -> None:
+        """Test that _request bounds upstream request durations and raises TimeoutError on timeout."""
+        client = AnimeStreamClient(base_url="https://anime.local")
+        mock_session = MagicMock()
+
+        class HangingGet:
+            async def __aenter__(self):
+                raise TimeoutError("Upstream timeout")
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+        mock_session.get.return_value = HangingGet()
+        client._get_session = AsyncMock(return_value=mock_session)
+
+        with pytest.raises(TimeoutError):
+            await client._request("/slow-page")
+
+    @pytest.mark.asyncio
+    async def test_get_homepage_carousels_extracts_single_latest_episodes_carousel(self) -> None:
+        """Test that get_homepage_carousels returns single Ultimi Episodi Anime carousel without replacing hero."""
         client = AnimeStreamClient(base_url="https://anime.local")
         layout_payload = {
             "current_page": 1,
@@ -408,15 +426,11 @@ class TestAnimeStreamClient:
         client._request = AsyncMock(return_value=mock_html)
         hero, carousels = await client.get_homepage_carousels()
 
-        assert hero is not None
-        assert hero.title == "Latest Anime"
-        assert len(carousels) == 2
+        assert hero is None
+        assert len(carousels) == 1
         assert carousels[0]["id"] == "anime_latest"
-        assert carousels[0]["title"] == "Ultime Uscite Anime"
+        assert carousels[0]["title"] == "Ultimi Episodi Anime"
         assert carousels[0]["items"][0].title == "Latest Anime"
-        assert carousels[1]["id"] == "anime_featured"
-        assert carousels[1]["title"] == "Anime in Evidenza"
-        assert carousels[1]["items"][0].title == "Featured Anime"
 
     @pytest.mark.asyncio
     async def test_resolve_stream_vixcloud_flow(self) -> None:
@@ -494,17 +508,66 @@ class TestAnimeSourceIntegration:
         source_manager = SourceManager()
         anime_source = AnimeSource(base_url="https://anime.local", enabled=True)
 
-        sample_hero = TvSeries(id="anime-1", title="Hero Anime", catalogs=["anime"])
-        sample_carousel = {"id": "anime_latest", "title": "Ultime Uscite Anime", "items": [sample_hero]}
-        anime_source.get_carousels = AsyncMock(return_value=(sample_hero, [sample_carousel]))
+        sample_item = TvSeries(id="anime-1", title="Episodio Anime", catalogs=["anime"])
+        sample_carousel = {"id": "anime_latest", "title": "Ultimi Episodi Anime", "items": [sample_item]}
+        anime_source.get_carousels = AsyncMock(return_value=(None, [sample_carousel]))
 
         source_manager.register_source(anime_source)
         hero, carousels = await source_manager.get_home_carousels()
 
-        assert hero is not None
-        assert hero.title == "Hero Anime"
+        assert hero is None
         assert len(carousels) == 1
         assert carousels[0]["id"] == "anime_latest"
+        assert carousels[0]["title"] == "Ultimi Episodi Anime"
+
+    @pytest.mark.asyncio
+    async def test_anime_source_supported_types_excludes_movie_and_tv_from_home_latest(self) -> None:
+        """Test that AnimeSource only supports 'anime' and is never queried for home 'all', 'movie', or 'tv'."""
+        source_manager = SourceManager()
+        anime_source = AnimeSource(base_url="https://anime.local", enabled=True)
+        assert anime_source.supported_types == ["anime"]
+
+        anime_source.get_latest_movies = AsyncMock(return_value=[])
+        anime_source.get_latest_tv = AsyncMock(return_value=[])
+        source_manager.register_source(anime_source)
+
+        # Query home latest feed
+        res = await source_manager.get_latest(media_type="all", page=1)
+        assert res == []
+        anime_source.get_latest_movies.assert_not_called()
+        anime_source.get_latest_tv.assert_not_called()
+
+        # Query movies feed
+        res_movies = await source_manager.get_latest(media_type="movie", page=1)
+        assert res_movies == []
+        anime_source.get_latest_movies.assert_not_called()
+
+        # Query tv feed
+        res_tv = await source_manager.get_latest(media_type="tv", page=1)
+        assert res_tv == []
+        anime_source.get_latest_tv.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_source_manager_records_and_lookups_fetch_timings(self) -> None:
+        """Test that SourceManager records and allows lookup of fetch durations for all source operations."""
+        source_manager = SourceManager()
+        anime_source = AnimeSource(base_url="https://anime.local", enabled=True)
+        source_manager.register_source(anime_source)
+
+        anime_source.get_carousels = AsyncMock(return_value=(None, []))
+
+        # 1. Fetch carousels and lookup timings
+        await source_manager.get_home_carousels()
+        timings = source_manager.get_fetch_timings()
+        assert "anime:get_carousels" in timings
+        assert isinstance(timings["anime:get_carousels"], float)
+        assert timings["anime:get_carousels"] >= 0.0
+
+        # 2. Fetch home latest (all) and verify anime is excluded from fetch lookups
+        await source_manager.get_latest(media_type="all", page=1)
+        latest_timings = source_manager.get_fetch_timings()
+        assert "anime:latest_movies" not in latest_timings
+        assert "anime:latest_tv" not in latest_timings
 
     @pytest.mark.asyncio
     async def test_anime_source_get_details_and_season(self) -> None:

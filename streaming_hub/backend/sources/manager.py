@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from ..models import Movie, ProviderSource, ResolvedMedia, TvSeason, TvSeries
@@ -23,6 +24,7 @@ class SourceManager:
     def __init__(self) -> None:
         """Initialize SourceManager with an empty registry."""
         self._sources: dict[str, BaseSource] = {}
+        self._last_fetch_timings: dict[str, float] = {}
 
     def register_source(self, source: BaseSource) -> None:
         """Register a new catalog/streaming source."""
@@ -313,12 +315,23 @@ class SourceManager:
         movie_items = [item for item in collected if isinstance(item, Movie)]
         return CatalogMerger.merge_movie_lists([], movie_items)
 
+    def get_fetch_timings(self) -> dict[str, float]:
+        """Return the most recent execution durations in seconds for source operations."""
+        return dict(self._last_fetch_timings)
+
     async def _safe_call(self, coro, label: str) -> Any:
-        """Execute a coroutine safely with error logging and fallback to empty list."""
+        """Execute a coroutine safely with timing measurement, error logging, and fallback to empty list."""
+        start = time.monotonic()
         try:
-            return await coro
+            res = await coro
+            elapsed = round(time.monotonic() - start, 3)
+            self._last_fetch_timings[label] = elapsed
+            _LOGGER.debug("Source call '%s' completed in %.3fs", label, elapsed)
+            return res
         except Exception as err:
-            _LOGGER.debug("Source call '%s' failed: %s", label, err)
+            elapsed = round(time.monotonic() - start, 3)
+            self._last_fetch_timings[label] = elapsed
+            _LOGGER.debug("Source call '%s' failed after %.3fs: %s", label, elapsed, err)
             return []
 
     async def close_all(self) -> None:

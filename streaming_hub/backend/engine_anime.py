@@ -88,16 +88,20 @@ class AnimeStreamClient:
 
         full_url = url if url.startswith("http") else urljoin(self.base_url + "/", url.lstrip("/"))
         try:
-            if method.upper() == "POST":
-                async with session.post(full_url, headers=req_headers, json=json_data) as resp:
-                    text = await resp.text(errors="ignore")
-                    self._extract_csrf(text)
-                    return text
-            else:
-                async with session.get(full_url, headers=req_headers) as resp:
-                    text = await resp.text(errors="ignore")
-                    self._extract_csrf(text)
-                    return text
+            async with asyncio.timeout(10):
+                if method.upper() == "POST":
+                    async with session.post(full_url, headers=req_headers, json=json_data) as resp:
+                        text = await resp.text(errors="ignore")
+                        self._extract_csrf(text)
+                        return text
+                else:
+                    async with session.get(full_url, headers=req_headers) as resp:
+                        text = await resp.text(errors="ignore")
+                        self._extract_csrf(text)
+                        return text
+        except TimeoutError as err:
+            _LOGGER.debug("Timeout requesting %s: %s", full_url, err)
+            raise
         except Exception as err:
             _LOGGER.debug("HTTP %s to %s failed: %s", method, full_url, err)
             raise
@@ -504,42 +508,25 @@ class AnimeStreamClient:
         return await self._reactive_client.resolve_stream(target_url, prefer_fhd=prefer_fhd)
 
     async def get_homepage_carousels(self) -> tuple[Movie | TvSeries | None, list[dict[str, Any]]]:
-        """Fetch homepage anime latest and featured carousels."""
+        """Fetch homepage anime latest episodes carousel."""
         if not self.base_url:
             return None, []
 
         carousels: list[dict[str, Any]] = []
-        hero: Movie | TvSeries | None = None
 
         try:
             html_text = await self._request(f"{self.base_url}/")
             latest_records = self._extract_embedded_records(html_text, tag_name="layout-items")
-            featured_records = self._extract_embedded_records(html_text, tag_name="the-carousel")
 
             if latest_records:
                 latest_items = [self._record_to_media(r) for r in latest_records if isinstance(r, dict)]
                 if latest_items:
-                    hero = latest_items[0]
                     carousels.append(
                         {
                             "id": "anime_latest",
-                            "title": "Ultime Uscite Anime",
+                            "title": "Ultimi Episodi Anime",
                             "count": len(latest_items),
                             "items": latest_items,
-                        }
-                    )
-
-            if featured_records:
-                featured_items = [self._record_to_media(r) for r in featured_records if isinstance(r, dict)]
-                if featured_items:
-                    if hero is None:
-                        hero = featured_items[0]
-                    carousels.append(
-                        {
-                            "id": "anime_featured",
-                            "title": "Anime in Evidenza",
-                            "count": len(featured_items),
-                            "items": featured_items,
                         }
                     )
         except Exception as err:
@@ -549,17 +536,16 @@ class AnimeStreamClient:
             items = await self.get_latest_releases(page=1)
             if not items:
                 return None, []
-            hero = items[0]
             carousels.append(
                 {
                     "id": "anime_latest",
-                    "title": "Ultime Uscite Anime",
+                    "title": "Ultimi Episodi Anime",
                     "count": len(items),
                     "items": items,
                 }
             )
 
-        return hero, carousels
+        return None, carousels
 
     async def close(self) -> None:
         """Close underlying client session."""

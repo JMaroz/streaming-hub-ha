@@ -1425,8 +1425,8 @@
 
           if (homePromise) {
             homePromise.then((homeData) => {
-              // Ensure user is still on browse home view
-              if (state.activeMode !== "browse" || state.activeType !== "all") return;
+              // Ensure user is still on main home view
+              if (state.activeMode !== "latest" || state.activeType !== "all" || state.activeGenre || state.searchQuery) return;
               if (homeData && homeData.carousels && homeData.carousels.length > 0) {
                 renderHomeCarousels(homeData.carousels);
                 if (homeData.hero) {

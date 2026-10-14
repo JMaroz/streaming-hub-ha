@@ -435,6 +435,7 @@ async def get_status(request: Request) -> dict[str, Any]:
         "country": CONFIG.get("country", "IT"),
         "tmdb_configured": bool(metadata_enricher.tmdb_api_key),
         "active_stream_sessions": len(stream_proxy._sessions),
+        "source_fetch_timings": source_manager.get_fetch_timings(),
     }
 
 
