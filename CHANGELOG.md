@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.5](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.4...v3.0.5) (2026-10-14)
+
+
+### Bug Fixes
+
+* **catalog:** isolate anime home content and add fetch timing lookups ([72d4efc](https://github.com/JMaroz/streaming-hub-ha/commit/72d4efce6c355d86165ae157bef3ef0f5d0ab82e))
+
 ## [3.0.4](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.3...v3.0.4) (2026-10-13)
 
 
