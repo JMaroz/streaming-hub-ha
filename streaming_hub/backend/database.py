@@ -1681,6 +1681,136 @@ class MediaDatabase:
             )
             return [dict(r) for r in cursor]
 
+    async def import_favorites_batch(
+        self,
+        items: list[dict[str, Any]],
+        media_type: str,
+        profile_id: str = "default",
+    ) -> int:
+        """Batch import TMDb items as favorites using efficient bulk queries and single-transaction insertion."""
+        if not items:
+            return 0
+        async with self._lock:
+            return await asyncio.to_thread(self._import_favorites_batch_sync, items, media_type, profile_id)
+
+    def _import_favorites_batch_sync(
+        self,
+        items: list[dict[str, Any]],
+        media_type: str,
+        profile_id: str,
+    ) -> int:
+        valid_items: list[dict[str, Any]] = []
+        tmdb_ids: list[int] = []
+        titles_lower: list[str] = []
+
+        for item in items:
+            tmdb_id = item.get("id")
+            if not tmdb_id:
+                continue
+            title = item.get("title") or item.get("name") or "Senza Titolo"
+            poster_path = item.get("poster_path")
+            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+            valid_items.append(
+                {
+                    "tmdb_id": int(tmdb_id),
+                    "title": title,
+                    "poster_url": poster_url,
+                }
+            )
+            tmdb_ids.append(int(tmdb_id))
+            if title:
+                titles_lower.append(title.strip().lower())
+
+        if not valid_items:
+            return 0
+
+        with self._get_connection() as conn:
+            # 1. Bulk query existing titles by tmdb_id
+            existing_by_tmdb: dict[int, str] = {}
+            chunk_size = 100
+            for i in range(0, len(tmdb_ids), chunk_size):
+                chunk = tmdb_ids[i : i + chunk_size]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = conn.execute(
+                    f"SELECT id, tmdb_id FROM titles WHERE tmdb_id IN ({placeholders})",
+                    chunk,
+                )
+                for row in cursor:
+                    existing_by_tmdb[int(row["tmdb_id"])] = str(row["id"])
+
+            # 2. Bulk query existing titles by lower title (for items not matched by tmdb_id)
+            existing_by_title: dict[str, str] = {}
+            if titles_lower:
+                for i in range(0, len(titles_lower), chunk_size):
+                    chunk = titles_lower[i : i + chunk_size]
+                    placeholders = ",".join("?" * len(chunk))
+                    q = f"SELECT id, LOWER(title) as ltitle FROM titles WHERE LOWER(title) IN ({placeholders})"
+                    params: list[Any] = list(chunk)
+                    if media_type:
+                        q += " AND media_type = ?"
+                        params.append(media_type)
+                    cursor = conn.execute(q, params)
+                    for row in cursor:
+                        existing_by_title[str(row["ltitle"])] = str(row["id"])
+
+            # 3. Bulk query existing favorites for profile
+            existing_fav_title_ids: set[str] = set()
+            candidate_title_ids: list[str] = []
+            prepared_records: list[tuple[str, str, str, str, str, str]] = []
+
+            for item in valid_items:
+                t_id = existing_by_tmdb.get(item["tmdb_id"])
+                if not t_id:
+                    t_id = existing_by_title.get(item["title"].strip().lower())
+                if not t_id:
+                    t_id = f"tmdb-{item['tmdb_id']}"
+
+                fav_id = f"fav_{profile_id}_{t_id}"
+                candidate_title_ids.append(t_id)
+                prepared_records.append(
+                    (
+                        fav_id,
+                        profile_id,
+                        t_id,
+                        media_type,
+                        item["title"],
+                        item["poster_url"],
+                    )
+                )
+
+            for i in range(0, len(candidate_title_ids), chunk_size):
+                chunk = candidate_title_ids[i : i + chunk_size]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = conn.execute(
+                    f"SELECT title_id FROM favorites WHERE profile_id = ? AND title_id IN ({placeholders})",
+                    [profile_id, *chunk],
+                )
+                for row in cursor:
+                    existing_fav_title_ids.add(str(row["title_id"]))
+
+            # 4. Filter and insert non-duplicate favorites in one transaction
+            to_insert = [rec for rec in prepared_records if rec[2] not in existing_fav_title_ids]
+            if not to_insert:
+                return 0
+
+            # Deduplicate within to_insert batch by fav_id/title_id
+            seen_in_batch: set[str] = set()
+            unique_to_insert: list[tuple[str, str, str, str, str, str]] = []
+            for rec in to_insert:
+                if rec[0] not in seen_in_batch:
+                    seen_in_batch.add(rec[0])
+                    unique_to_insert.append(rec)
+
+            conn.executemany(
+                """
+                INSERT INTO favorites (id, profile_id, title_id, media_type, title, poster_url, added_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO NOTHING;
+                """,
+                unique_to_insert,
+            )
+            return len(unique_to_insert)
+
     async def find_title_by_tmdb_or_query(
         self,
         title: str,

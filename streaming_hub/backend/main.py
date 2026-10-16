@@ -863,29 +863,11 @@ async def sync_tmdb_account(req: TmdbAccountSyncRequest) -> dict[str, Any]:
 
     # Helper to add TMDb item to local favorites
     async def _import_items(items: list[dict[str, Any]], media_type: str) -> int:
-        count = 0
-        for item in items:
-            tmdb_id = item.get("id")
-            if not tmdb_id:
-                continue
-            title = item.get("title") or item.get("name") or "Senza Titolo"
-            poster_path = item.get("poster_path")
-            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
-
-            # Check if matching local title exists
-            existing = await db.find_title_by_tmdb_or_query(title=title, media_type=media_type, tmdb_id=tmdb_id)
-            title_id = existing["id"] if existing else f"tmdb-{tmdb_id}"
-
-            added = await db.add_favorite(
-                title_id=title_id,
-                media_type=media_type,
-                title=title,
-                poster_url=poster_url,
-                profile_id=profile.id,
-            )
-            if added:
-                count += 1
-        return count
+        return await db.import_favorites_batch(
+            items=items,
+            media_type=media_type,
+            profile_id=profile.id,
+        )
 
     imported_favorites += await _import_items(fav_movies, "movie")
     imported_favorites += await _import_items(fav_tv, "tv")
