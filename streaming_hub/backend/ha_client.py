@@ -273,16 +273,34 @@ class HACoreClient:
         poster_url: str | None = None,
         mime_type: str = "application/vnd.apple.mpegurl",
         subtitles: list[dict[str, Any]] | None = None,
+        media_type: str = "movie",
+        series_title: str | None = None,
+        season_number: int | None = None,
+        episode_number: int | None = None,
     ) -> tuple[bool, str]:
         """Send play_media command to specified Home Assistant entity with companion fallback."""
         if not self.is_available:
             _LOGGER.error("Cannot play media: SUPERVISOR_TOKEN not configured")
             return False, entity_id
 
+        cast_metadata: dict[str, Any] = {
+            "metadataType": 2 if media_type == "tv" else 1,
+            "title": title,
+            "images": [{"url": poster_url}] if poster_url else [],
+        }
+        if media_type == "tv":
+            if series_title:
+                cast_metadata["seriesTitle"] = series_title
+            if season_number is not None:
+                cast_metadata["season"] = season_number
+            if episode_number is not None:
+                cast_metadata["episode"] = episode_number
+
         extra_dict: dict[str, Any] = {
             "title": title,
             "thumb": poster_url,
             "stream_type": "BUFFERED",
+            "metadata": cast_metadata,
         }
         if subtitles:
             tracks = []
@@ -353,7 +371,7 @@ class HACoreClient:
             except Exception as err:
                 _LOGGER.debug("Fallback play_media without extra error: %s", err)
 
-        # Fallback 2: Retry with genuine streaming video formats (exclude 'url' which triggers Android intent failures)
+        # Fallback 2: Retry with genuine streaming video formats preserving metadata
         if not success:
             for alt_mime in ("video/mp4", "video", "application/x-mpegURL"):
                 _LOGGER.info("Retrying play_media on %s with media_content_type=%s...", entity_id, alt_mime)
@@ -361,6 +379,7 @@ class HACoreClient:
                     "entity_id": entity_id,
                     "media_content_id": media_url,
                     "media_content_type": alt_mime,
+                    "extra": extra_dict,
                 }
                 try:
                     async with (

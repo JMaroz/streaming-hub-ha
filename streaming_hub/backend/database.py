@@ -27,14 +27,12 @@ LOCAL_DATA_DIR = Path("./data")
 def slug_to_title(media_id: str) -> str:
     """Derive human-readable title from a media ID slug if possible."""
     clean = media_id.replace("sc-", "")
-    if "-" in clean:
-        parts = clean.split("-", 1)
-        slug_part = parts[1]
-        slug_part = re.sub(r"_s\d+e\d+$", "", slug_part)
-        words = re.sub(r"[_\-]+", " ", slug_part).strip().title()
-        if words:
-            return words
-    return ""
+    slug = re.sub(r"_s\d+e\d+$", "", clean)
+    parts = slug.split("-")
+    if len(parts) > 1 and parts[0].isdigit():
+        slug = "-".join(parts[1:])
+    words = re.sub(r"[_\-]+", " ", slug).strip().title()
+    return words if words and not words.isdigit() else ""
 
 
 def get_db_path() -> Path:
@@ -548,7 +546,7 @@ class MediaDatabase:
                 chunk = keys[i : i + chunk_size]
                 placeholders = ",".join("?" * len(chunk))
                 cursor = conn.execute(
-                    f"SELECT id, certification, is_adult, duration, rating, watch_providers, genres, tmdb_id, source_a_url, source_b_url, poster_url, backdrop_url FROM titles WHERE id IN ({placeholders})",
+                    f"SELECT id, title, description, year, tmdb_id, imdb_id, certification, is_adult, duration, rating, watch_providers, genres, source_a_url, source_b_url, poster_url, backdrop_url FROM titles WHERE id IN ({placeholders})",
                     chunk,
                 )
                 for row in cursor.fetchall():
@@ -556,6 +554,11 @@ class MediaDatabase:
                     target = id_map.get(tid)
                     if not target:
                         continue
+                    db_title = row["title"]
+                    db_desc = row["description"]
+                    db_year = row["year"]
+                    db_tmdb = row["tmdb_id"]
+                    db_imdb = row["imdb_id"]
                     cert = row["certification"]
                     is_adult_db = bool(row["is_adult"])
                     dur = row["duration"]
@@ -564,6 +567,41 @@ class MediaDatabase:
                     raw_g = row["genres"]
                     src_a = row["source_a_url"]
                     src_b = row["source_b_url"]
+
+                    if db_title and db_title.strip() != "Senza Titolo":
+                        if isinstance(target, dict):
+                            if not target.get("title") or target["title"].strip() in ("", "Senza Titolo"):
+                                target["title"] = db_title
+                        elif not getattr(target, "title", None) or target.title.strip() in ("", "Senza Titolo"):
+                            target.title = db_title
+
+                    if db_desc:
+                        if isinstance(target, dict):
+                            if not target.get("description"):
+                                target["description"] = db_desc
+                        elif not getattr(target, "description", None):
+                            target.description = db_desc
+
+                    if db_year:
+                        if isinstance(target, dict):
+                            if not target.get("year"):
+                                target["year"] = db_year
+                        elif not getattr(target, "year", None):
+                            target.year = db_year
+
+                    if db_tmdb:
+                        if isinstance(target, dict):
+                            if not target.get("tmdb_id"):
+                                target["tmdb_id"] = db_tmdb
+                        elif not getattr(target, "tmdb_id", None):
+                            target.tmdb_id = db_tmdb
+
+                    if db_imdb:
+                        if isinstance(target, dict):
+                            if not target.get("imdb_id"):
+                                target["imdb_id"] = db_imdb
+                        elif not getattr(target, "imdb_id", None):
+                            target.imdb_id = db_imdb
 
                     if cert:
                         if isinstance(target, dict):
@@ -639,6 +677,20 @@ class MediaDatabase:
                             target["source_b_url"] = src_b
                         elif not getattr(target, "source_b_url", None):
                             target.source_b_url = src_b
+
+        # Fallback to slug_to_title for any items that still lack a meaningful title
+        for it in items:
+            mid = it.get("id") if isinstance(it, dict) else getattr(it, "id", None)
+            if not mid:
+                continue
+            curr_title = it.get("title") if isinstance(it, dict) else getattr(it, "title", None)
+            if not curr_title or curr_title.strip() in ("", "Senza Titolo"):
+                derived = slug_to_title(str(mid))
+                if derived:
+                    if isinstance(it, dict):
+                        it["title"] = derived
+                    else:
+                        it.title = derived
 
     async def get_titles_by_genre(
         self,
