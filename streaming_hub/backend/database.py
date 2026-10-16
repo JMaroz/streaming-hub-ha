@@ -452,7 +452,7 @@ class MediaDatabase:
                     f"SELECT id, watch_providers FROM titles WHERE id IN ({placeholders})",
                     chunk,
                 )
-                for row in cursor.fetchall():
+                for row in cursor:
                     raw_wp = row["watch_providers"]
                     if raw_wp:
                         try:
@@ -551,7 +551,7 @@ class MediaDatabase:
                     f"SELECT id, certification, is_adult, duration, rating, watch_providers, genres, tmdb_id, source_a_url, source_b_url, poster_url, backdrop_url FROM titles WHERE id IN ({placeholders})",
                     chunk,
                 )
-                for row in cursor.fetchall():
+                for row in cursor:
                     tid = str(row["id"])
                     target = id_map.get(tid)
                     if not target:
@@ -669,9 +669,8 @@ class MediaDatabase:
                 """,
                 (media_type, media_type, pattern, limit),
             )
-            rows = cursor.fetchall()
             items: list[Movie | TvSeries] = []
-            for row in rows:
+            for row in cursor:
                 if row["raw_json"]:
                     try:
                         data = json.loads(row["raw_json"])
@@ -901,18 +900,30 @@ class MediaDatabase:
                 # 1. Check existing watch_history record for this item
                 h_row = conn.execute("SELECT title, poster_url FROM watch_history WHERE id = ?", (hist_id,)).fetchone()
                 if h_row:
-                    if (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and h_row["title"] and h_row["title"] != "Senza Titolo":
+                    if (
+                        (not effective_title or effective_title.strip() in ("", "Senza Titolo"))
+                        and h_row["title"]
+                        and h_row["title"] != "Senza Titolo"
+                    ):
                         effective_title = h_row["title"]
                     if not effective_poster and h_row["poster_url"]:
                         effective_poster = h_row["poster_url"]
 
                 # 2. Check titles table
                 if not effective_title or effective_title.strip() in ("", "Senza Titolo") or not effective_poster:
-                    t_row = conn.execute("SELECT title, poster_url, raw_json FROM titles WHERE id = ?", (media_id,)).fetchone()
+                    t_row = conn.execute(
+                        "SELECT title, poster_url, raw_json FROM titles WHERE id = ?", (media_id,)
+                    ).fetchone()
                     if t_row:
-                        if (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["title"] and t_row["title"] != "Senza Titolo":
+                        if (
+                            (not effective_title or effective_title.strip() in ("", "Senza Titolo"))
+                            and t_row["title"]
+                            and t_row["title"] != "Senza Titolo"
+                        ):
                             effective_title = t_row["title"]
-                        elif (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["raw_json"]:
+                        elif (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row[
+                            "raw_json"
+                        ]:
                             with contextlib.suppress(Exception):
                                 raw_data = json.loads(t_row["raw_json"])
                                 effective_title = raw_data.get("name") or raw_data.get("title")
@@ -976,7 +987,7 @@ class MediaDatabase:
                 """,
                 (profile_id, limit),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            return [dict(row) for row in cursor]
 
     async def get_continue_watching(self, profile_id: str = "default", limit: int = 20) -> list[dict[str, Any]]:
         """Retrieve deduplicated in-progress movies and TV series for 'Continua a guardare'."""
@@ -1004,7 +1015,7 @@ class MediaDatabase:
                 LIMIT ?;
             """
             cursor = conn.execute(query, (profile_id, profile_id, limit * 2))
-            rows = [dict(r) for r in cursor.fetchall()]
+            rows = [dict(r) for r in cursor]
 
             results: list[dict[str, Any]] = []
             for r in rows:
@@ -1129,7 +1140,7 @@ class MediaDatabase:
                 LIMIT ?;
             """
             cursor = conn.execute(query, (profile_id, profile_id, limit * 2))
-            rows = [dict(r) for r in cursor.fetchall()]
+            rows = [dict(r) for r in cursor]
 
             results: list[dict[str, Any]] = []
             for r in rows:
@@ -1331,9 +1342,15 @@ class MediaDatabase:
             effective_title = title
             effective_poster = poster_url
             if not effective_title or effective_title.strip() in ("", "Senza Titolo") or not effective_poster:
-                t_row = conn.execute("SELECT title, poster_url, raw_json FROM titles WHERE id = ?", (title_id,)).fetchone()
+                t_row = conn.execute(
+                    "SELECT title, poster_url, raw_json FROM titles WHERE id = ?", (title_id,)
+                ).fetchone()
                 if t_row:
-                    if (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["title"] and t_row["title"] != "Senza Titolo":
+                    if (
+                        (not effective_title or effective_title.strip() in ("", "Senza Titolo"))
+                        and t_row["title"]
+                        and t_row["title"] != "Senza Titolo"
+                    ):
                         effective_title = t_row["title"]
                     elif (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["raw_json"]:
                         with contextlib.suppress(Exception):
@@ -1374,9 +1391,8 @@ class MediaDatabase:
                 """,
                 (profile_id,),
             )
-            rows = cursor.fetchall()
             results = []
-            for row in rows:
+            for row in cursor:
                 r = dict(row)
                 r["id"] = r["title_id"]
                 r["type"] = r["media_type"]
@@ -1451,7 +1467,7 @@ class MediaDatabase:
                     "season_number": int(row["target_season"] or 1),
                     "age_seconds": int(row["age_seconds"]) if row["age_seconds"] is not None else None,
                 }
-                for row in cursor_tv.fetchall()
+                for row in cursor_tv
             ]
 
             # 2. Movie candidates from active watch history (last 14 days) and favorites:
@@ -1490,7 +1506,7 @@ class MediaDatabase:
                         "season_number": None,
                         "age_seconds": int(row["age_seconds"]) if row["age_seconds"] is not None else None,
                     }
-                    for row in cursor_movie.fetchall()
+                    for row in cursor_movie
                 ]
 
             return tv_candidates + movie_candidates
@@ -1629,7 +1645,7 @@ class MediaDatabase:
                 """,
                 (limit,),
             )
-            return [dict(r) for r in cursor.fetchall()]
+            return [dict(r) for r in cursor]
 
     async def find_title_by_tmdb_or_query(
         self,

@@ -1581,7 +1581,11 @@ async def save_progress(req: ProgressRequest) -> dict[str, Any]:
             try:
                 cached_title = await db.get_title(req.media_id)
                 if cached_title:
-                    if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and cached_title.get("title") and cached_title["title"] != "Senza Titolo":
+                    if (
+                        (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"))
+                        and cached_title.get("title")
+                        and cached_title["title"] != "Senza Titolo"
+                    ):
                         resolved_title = cached_title["title"]
                     if not resolved_poster and cached_title.get("poster_url"):
                         resolved_poster = cached_title["poster_url"]
@@ -1689,7 +1693,11 @@ async def toggle_favorite(req: FavoriteRequest) -> dict[str, Any]:
             try:
                 cached_title = await db.get_title(req.title_id)
                 if cached_title:
-                    if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and cached_title.get("title") and cached_title["title"] != "Senza Titolo":
+                    if (
+                        (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"))
+                        and cached_title.get("title")
+                        and cached_title["title"] != "Senza Titolo"
+                    ):
                         resolved_title = cached_title["title"]
                     if not resolved_poster and cached_title.get("poster_url"):
                         resolved_poster = cached_title["poster_url"]
@@ -1855,7 +1863,11 @@ async def cast_to_device(req: CastRequest) -> dict[str, Any]:
     if cached_title_record:
         if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
             resolved_title = cached_title_record.get("title")
-        elif resolved_title.startswith("Serie TV - S") and cached_title_record.get("title") and cached_title_record["title"] != "Senza Titolo":
+        elif (
+            resolved_title.startswith("Serie TV - S")
+            and cached_title_record.get("title")
+            and cached_title_record["title"] != "Senza Titolo"
+        ):
             ep_part = resolved_title.replace("Serie TV - ", "")
             resolved_title = f"{cached_title_record['title']} - {ep_part}"
 

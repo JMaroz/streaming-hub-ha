@@ -457,7 +457,9 @@ def is_title_allowed_for_profile(
     # Check safe family franchise and family genre
     has_safe_franchise = any(sf in title for sf in SAFE_FAMILY_FRANCHISES)
     has_family_genre = any(fk in genres_str for fk in FAMILY_FRIENDLY_KEYWORDS) if genres else False
-    is_family_animation = ("animazione" in genres_str or "animation" in genres_str) and (has_family_genre or has_safe_franchise)
+    is_family_animation = ("animazione" in genres_str or "animation" in genres_str) and (
+        has_family_genre or has_safe_franchise
+    )
 
     # Check explicit certification if available
     if cert:
