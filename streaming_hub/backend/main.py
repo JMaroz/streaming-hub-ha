@@ -877,21 +877,32 @@ async def sync_tmdb_account(req: TmdbAccountSyncRequest) -> dict[str, Any]:
     # 2. Push local favorites with tmdb_id back to TMDb favorites (bidirectional sync)
     pushed_count = 0
     local_favs = await db.get_favorites(profile_id=profile.id)
-    for fav in local_favs:
-        t_id = fav.get("id", "")
-        t_rec = await db.get_title(t_id)
-        if t_rec and t_rec.get("tmdb_id"):
-            m_type = "movie" if fav.get("type") == "movie" else "tv"
-            success = await metadata_enricher.post_account_favorite(
+    sem = asyncio.Semaphore(10)
+
+    async def _push_fav(fav: dict[str, Any]) -> bool:
+        tmdb_id = fav.get("tmdb_id")
+        if not tmdb_id:
+            t_id = fav.get("id", "")
+            t_rec = await db.get_title(t_id)
+            if t_rec:
+                tmdb_id = t_rec.get("tmdb_id")
+        if not tmdb_id:
+            return False
+
+        m_type = "movie" if fav.get("type") == "movie" else "tv"
+        async with sem:
+            return await metadata_enricher.post_account_favorite(
                 session_id=session_id,
                 account_id=account_id,
                 media_type=m_type,
-                media_id=int(t_rec["tmdb_id"]),
+                media_id=int(tmdb_id),
                 favorite=True,
                 api_key=tmdb_key,
             )
-            if success:
-                pushed_count += 1
+
+    if local_favs:
+        push_results = await asyncio.gather(*[_push_fav(fav) for fav in local_favs], return_exceptions=True)
+        pushed_count = sum(1 for res in push_results if res is True)
 
     total_synced = imported_favorites + imported_watchlist + pushed_count
     return {

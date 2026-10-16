@@ -1417,7 +1417,7 @@ class MediaDatabase:
                 """
                 SELECT f.title_id, f.media_type, f.title, f.poster_url, f.added_at,
                        t.title as canonical_title, t.poster_url as canonical_poster,
-                       t.backdrop_url, t.description, t.year, t.rating, t.duration, t.raw_json
+                       t.backdrop_url, t.description, t.year, t.rating, t.duration, t.tmdb_id, t.raw_json
                 FROM favorites f
                 LEFT JOIN titles t ON f.title_id = t.id
                 WHERE f.profile_id = ?
@@ -1437,6 +1437,8 @@ class MediaDatabase:
                     with contextlib.suppress(Exception):
                         raw_data = json.loads(r["raw_json"])
                         resolved_title = raw_data.get("name") or raw_data.get("title")
+                        if not r.get("tmdb_id") and raw_data.get("tmdb_id"):
+                            r["tmdb_id"] = raw_data.get("tmdb_id")
                 if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
                     resolved_title = slug_to_title(r["title_id"]) or "Senza Titolo"
                 r["title"] = resolved_title
