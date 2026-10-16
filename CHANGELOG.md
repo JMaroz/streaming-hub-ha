@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.0.6](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.5...v3.0.6) (2026-10-16)
+
+
+### Bug Fixes
+
+* **metadata:** enrich playback and catalog titles ([5608d33](https://github.com/JMaroz/streaming-hub-ha/commit/5608d3308d8f47125a931c9b18b2b33bbf6abe9a))
+
+
+### Performance
+
+* **backend:** save TV series seasons concurrently ([b158086](https://github.com/JMaroz/streaming-hub-ha/commit/b1580863f312d7ba75be472207c35b0f044ea7ef))
+* **crawler:** precompile regex patterns in CrawlerCatalogParser ([c726530](https://github.com/JMaroz/streaming-hub-ha/commit/c7265309dd38bb676b97d84d21dc4485d10902a9))
+* **database:** batch TMDb favorites import queries ([81d5d6f](https://github.com/JMaroz/streaming-hub-ha/commit/81d5d6fa746953c35d8312def761daef96188a0c))
+* **database:** stream rows using cursor iteration ([764c13c](https://github.com/JMaroz/streaming-hub-ha/commit/764c13c76cb4f10c5cd3377fb7b102bf8b4bdcec))
+* **sync:** optimize bidirectional TMDb favorites sync loop ([ba8a4c3](https://github.com/JMaroz/streaming-hub-ha/commit/ba8a4c35f1a134b28dbe191e8b107ee61499e03a))
+
 ## [3.0.5](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.4...v3.0.5) (2026-10-14)
 
 
