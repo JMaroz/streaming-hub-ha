@@ -1,27 +1,38 @@
-# Handoff: Playback and Content Metadata Resolution
+# Handoff: Evaluation and Merging of Performance Pull Requests
 
 ## Current State
-Resolved missing titles and metadata across both media playback (Google Cast, browser web player, MediaSession, proxy streams) and catalog displays (TV seasons, episodes, movies, continue watching). All 118 unit and regression tests pass with zero ruff lint errors.
+Evaluated, resolved merge conflicts against `main`, and merged all 5 open performance pull requests (#21, #22, #23, #24, #25) while leaving release PR #26 untouched. All 122 unit and performance tests pass with 0 lint errors.
 
-## Modified Files
-- `streaming_hub/backend/ha_client.py`: Injected Google Cast `extra.metadata` (type 1 for movies, type 2 for TV with seriesTitle, season, episode, title, images) and preserved title/thumb in format retries.
-- `streaming_hub/backend/proxy.py`: Stored `media_title` in `StreamSession` and returned `Content-Disposition: inline; filename="{title}.m3u8"` / `.mp4` headers for external players.
-- `streaming_hub/backend/main.py`: Passed `media_title` through stream resolution, sanitized `Serie TV - S` and `Senza Titolo - S` prefixes, and updated season endpoints to pass `imdb_id` and `series_title` to metadata enricher.
-- `streaming_hub/backend/metadata.py`: Added public free fallbacks to Cinemeta and TVmaze for episode metadata without TMDb key, added `_slug_to_search_title()`, enhanced `_clean_title()`, and auto-enriched loaded seasons.
-- `streaming_hub/backend/database.py`: Fixed `slug_to_title()` to preserve words when token 0 is not numeric, updated `_enrich_items_sync()` to SELECT and populate `title`, `description`, `year`, `tmdb_id`, `imdb_id`.
-- `streaming_hub/frontend/js/app.js`: Added Web `navigator.mediaSession` integration for OS playback controls, retained full episode titles in player header and resolve payloads, and fixed slug title truncation.
-- `docs/plans/2026-10-16_fix_playback_and_content_metadata.md`: Plan execution checklist completed.
-- `tests/test_metadata_and_playback.py`: Comprehensive test suite for Cast metadata, Cinemeta/TVmaze fallbacks, slug parsing, and SQLite enrichment.
+## Merged Pull Requests & Scope
+- **PR #21** (`perf(crawler): precompile regex patterns in CrawlerCatalogParser`): Pre-compiled 25+ regexes into class-level constants in `CrawlerCatalogParser`, boosting catalog and episode parsing speed by ~20%.
+- **PR #22** (`perf(database): stream rows using cursor iteration`): Replaced intermediate `cursor.fetchall()` memory allocations with direct cursor iteration across database queries, preventing memory spikes on large batches.
+- **PR #23** (`perf(database): batch TMDb favorites import queries`): Added `import_favorites_batch` to `MediaDatabase` to replace N+1 queries during TMDb sync, improving import speed by ~155x.
+- **PR #24** (`perf(sync): optimize bidirectional TMDb favorites sync loop`): Projected `t.tmdb_id` in `get_favorites` to eliminate N database queries and pushed local favorites to TMDb concurrently with `asyncio.Semaphore(10)`.
+- **PR #25** (`perf(backend): save TV series seasons concurrently`): Replaced sequential season saving in `get_title_details` with concurrent execution via `asyncio.gather`.
+
+## Modified / Added Files
+- `streaming_hub/backend/crawler_parser.py`: Pre-compiled regex patterns.
+- `streaming_hub/backend/database.py`: Direct cursor iteration, `import_favorites_batch`, and `tmdb_id` projection.
+- `streaming_hub/backend/main.py`: Batched TMDb import, bounded concurrent TMDb push, concurrent season saves.
+- `script/benchmark_crawler.py`: Standalone benchmark for crawler parsing performance.
+- `tests/test_database_performance.py`: Cursor streaming benchmark and memory test.
+- `tests/test_performance_import_items.py`: Benchmark for batched TMDb favorites import.
+- `tests/test_tmdb_sync_performance.py`: Benchmark for zero N+1 database queries on TMDb sync.
+- `tests/test_save_seasons_perf.py`: Benchmark for concurrent season persistence.
+- `docs/plans/2026-10-16_pr_evaluation_and_merge.md`: Tracked review and merge execution plan.
 
 ## Next Steps
-- Test live streaming and playback on actual Chromecast devices and Home Assistant dashboard.
-- Verify behavior on newly added providers or catalog scrape refreshes.
+- Release Please will update PR #26 (`chore(main): release 3.0.6`) including all merged performance changes.
+- Review and merge PR #26 when ready for the new release cut.
 
 ## Useful Commands
 ```bash
-# Run full test suite
+# Run full test suite (122 tests)
 .venv/bin/pytest tests/ -v
 
 # Run linter
 .venv/bin/ruff check .
+
+# Check open PRs status
+gh pr list --state open
 ```
