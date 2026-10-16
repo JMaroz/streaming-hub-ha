@@ -450,7 +450,7 @@ class MediaDatabase:
                     f"SELECT id, watch_providers FROM titles WHERE id IN ({placeholders})",
                     chunk,
                 )
-                for row in cursor.fetchall():
+                for row in cursor:
                     raw_wp = row["watch_providers"]
                     if raw_wp:
                         try:
@@ -549,7 +549,7 @@ class MediaDatabase:
                     f"SELECT id, title, description, year, tmdb_id, imdb_id, certification, is_adult, duration, rating, watch_providers, genres, source_a_url, source_b_url, poster_url, backdrop_url FROM titles WHERE id IN ({placeholders})",
                     chunk,
                 )
-                for row in cursor.fetchall():
+                for row in cursor:
                     tid = str(row["id"])
                     target = id_map.get(tid)
                     if not target:
@@ -721,9 +721,8 @@ class MediaDatabase:
                 """,
                 (media_type, media_type, pattern, limit),
             )
-            rows = cursor.fetchall()
             items: list[Movie | TvSeries] = []
-            for row in rows:
+            for row in cursor:
                 if row["raw_json"]:
                     try:
                         data = json.loads(row["raw_json"])
@@ -1028,7 +1027,7 @@ class MediaDatabase:
                 """,
                 (profile_id, limit),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            return [dict(row) for row in cursor]
 
     async def get_continue_watching(self, profile_id: str = "default", limit: int = 20) -> list[dict[str, Any]]:
         """Retrieve deduplicated in-progress movies and TV series for 'Continua a guardare'."""
@@ -1056,7 +1055,7 @@ class MediaDatabase:
                 LIMIT ?;
             """
             cursor = conn.execute(query, (profile_id, profile_id, limit * 2))
-            rows = [dict(r) for r in cursor.fetchall()]
+            rows = [dict(r) for r in cursor]
 
             results: list[dict[str, Any]] = []
             for r in rows:
@@ -1181,7 +1180,7 @@ class MediaDatabase:
                 LIMIT ?;
             """
             cursor = conn.execute(query, (profile_id, profile_id, limit * 2))
-            rows = [dict(r) for r in cursor.fetchall()]
+            rows = [dict(r) for r in cursor]
 
             results: list[dict[str, Any]] = []
             for r in rows:
@@ -1426,9 +1425,8 @@ class MediaDatabase:
                 """,
                 (profile_id,),
             )
-            rows = cursor.fetchall()
             results = []
-            for row in rows:
+            for row in cursor:
                 r = dict(row)
                 r["id"] = r["title_id"]
                 r["type"] = r["media_type"]
@@ -1503,7 +1501,7 @@ class MediaDatabase:
                     "season_number": int(row["target_season"] or 1),
                     "age_seconds": int(row["age_seconds"]) if row["age_seconds"] is not None else None,
                 }
-                for row in cursor_tv.fetchall()
+                for row in cursor_tv
             ]
 
             # 2. Movie candidates from active watch history (last 14 days) and favorites:
@@ -1542,7 +1540,7 @@ class MediaDatabase:
                         "season_number": None,
                         "age_seconds": int(row["age_seconds"]) if row["age_seconds"] is not None else None,
                     }
-                    for row in cursor_movie.fetchall()
+                    for row in cursor_movie
                 ]
 
             return tv_candidates + movie_candidates
@@ -1681,7 +1679,7 @@ class MediaDatabase:
                 """,
                 (limit,),
             )
-            return [dict(r) for r in cursor.fetchall()]
+            return [dict(r) for r in cursor]
 
     async def find_title_by_tmdb_or_query(
         self,
