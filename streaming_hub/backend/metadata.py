@@ -365,7 +365,9 @@ class MetadataEnricher:
         try:
             tmdb_id = movie.tmdb_id
             if not tmdb_id:
-                clean_title = self._clean_title(movie.title) if movie.title and movie.title.strip() != "Senza Titolo" else ""
+                clean_title = (
+                    self._clean_title(movie.title) if movie.title and movie.title.strip() != "Senza Titolo" else ""
+                )
                 if not clean_title and movie.id:
                     clean_id = movie.id.replace("sc-", "")
                     if "-" in clean_id:
@@ -396,7 +398,9 @@ class MetadataEnricher:
         try:
             tmdb_id = series.tmdb_id
             if not tmdb_id:
-                clean_title = self._clean_title(series.title) if series.title and series.title.strip() != "Senza Titolo" else ""
+                clean_title = (
+                    self._clean_title(series.title) if series.title and series.title.strip() != "Senza Titolo" else ""
+                )
                 if not clean_title and series.id:
                     clean_id = series.id.replace("sc-", "")
                     if "-" in clean_id:
@@ -461,10 +465,7 @@ class MetadataEnricher:
         # Ensure title is populated if missing or placeholder
         if not movie.title or movie.title.strip() in ("", "Senza Titolo"):
             resolved_title = (
-                meta.get("title")
-                or meta.get("name")
-                or meta.get("original_title")
-                or meta.get("original_name")
+                meta.get("title") or meta.get("name") or meta.get("original_title") or meta.get("original_name")
             )
             if resolved_title:
                 movie.title = str(resolved_title)
@@ -579,10 +580,7 @@ class MetadataEnricher:
         # Ensure title is populated if missing or placeholder
         if not series.title or series.title.strip() in ("", "Senza Titolo"):
             resolved_title = (
-                meta.get("name")
-                or meta.get("title")
-                or meta.get("original_name")
-                or meta.get("original_title")
+                meta.get("name") or meta.get("title") or meta.get("original_name") or meta.get("original_title")
             )
             if resolved_title:
                 series.title = str(resolved_title)

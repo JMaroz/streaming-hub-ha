@@ -859,29 +859,11 @@ async def sync_tmdb_account(req: TmdbAccountSyncRequest) -> dict[str, Any]:
 
     # Helper to add TMDb item to local favorites
     async def _import_items(items: list[dict[str, Any]], media_type: str) -> int:
-        count = 0
-        for item in items:
-            tmdb_id = item.get("id")
-            if not tmdb_id:
-                continue
-            title = item.get("title") or item.get("name") or "Senza Titolo"
-            poster_path = item.get("poster_path")
-            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
-
-            # Check if matching local title exists
-            existing = await db.find_title_by_tmdb_or_query(title=title, media_type=media_type, tmdb_id=tmdb_id)
-            title_id = existing["id"] if existing else f"tmdb-{tmdb_id}"
-
-            added = await db.add_favorite(
-                title_id=title_id,
-                media_type=media_type,
-                title=title,
-                poster_url=poster_url,
-                profile_id=profile.id,
-            )
-            if added:
-                count += 1
-        return count
+        return await db.import_favorites_batch(
+            items=items,
+            media_type=media_type,
+            profile_id=profile.id,
+        )
 
     imported_favorites += await _import_items(fav_movies, "movie")
     imported_favorites += await _import_items(fav_tv, "tv")
@@ -1581,7 +1563,11 @@ async def save_progress(req: ProgressRequest) -> dict[str, Any]:
             try:
                 cached_title = await db.get_title(req.media_id)
                 if cached_title:
-                    if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and cached_title.get("title") and cached_title["title"] != "Senza Titolo":
+                    if (
+                        (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"))
+                        and cached_title.get("title")
+                        and cached_title["title"] != "Senza Titolo"
+                    ):
                         resolved_title = cached_title["title"]
                     if not resolved_poster and cached_title.get("poster_url"):
                         resolved_poster = cached_title["poster_url"]
@@ -1689,7 +1675,11 @@ async def toggle_favorite(req: FavoriteRequest) -> dict[str, Any]:
             try:
                 cached_title = await db.get_title(req.title_id)
                 if cached_title:
-                    if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and cached_title.get("title") and cached_title["title"] != "Senza Titolo":
+                    if (
+                        (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"))
+                        and cached_title.get("title")
+                        and cached_title["title"] != "Senza Titolo"
+                    ):
                         resolved_title = cached_title["title"]
                     if not resolved_poster and cached_title.get("poster_url"):
                         resolved_poster = cached_title["poster_url"]
@@ -1855,7 +1845,11 @@ async def cast_to_device(req: CastRequest) -> dict[str, Any]:
     if cached_title_record:
         if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
             resolved_title = cached_title_record.get("title")
-        elif resolved_title.startswith("Serie TV - S") and cached_title_record.get("title") and cached_title_record["title"] != "Senza Titolo":
+        elif (
+            resolved_title.startswith("Serie TV - S")
+            and cached_title_record.get("title")
+            and cached_title_record["title"] != "Senza Titolo"
+        ):
             ep_part = resolved_title.replace("Serie TV - ", "")
             resolved_title = f"{cached_title_record['title']} - {ep_part}"
 

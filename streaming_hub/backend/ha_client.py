@@ -597,38 +597,40 @@ class HACoreClient:
                 try:
                     async with aiohttp.ClientSession() as session, session.ws_connect(ws_url, timeout=10) as ws:
                         # 1. Receive auth_required
-                            msg = await ws.receive_json()
-                            if msg.get("type") == "auth_required":
-                                await ws.send_json({"type": "auth", "access_token": self.token})
-                                auth_resp = await ws.receive_json()
-                                if auth_resp.get("type") != "auth_ok":
-                                    _LOGGER.debug("HA WS auth failed: %s", auth_resp)
-                                    await asyncio.sleep(30)
-                                    continue
+                        msg = await ws.receive_json()
+                        if msg.get("type") == "auth_required":
+                            await ws.send_json({"type": "auth", "access_token": self.token})
+                            auth_resp = await ws.receive_json()
+                            if auth_resp.get("type") != "auth_ok":
+                                _LOGGER.debug("HA WS auth failed: %s", auth_resp)
+                                await asyncio.sleep(30)
+                                continue
 
-                            # 2. Subscribe to mobile_app_notification_action
-                            await ws.send_json({
+                        # 2. Subscribe to mobile_app_notification_action
+                        await ws.send_json(
+                            {
                                 "id": 1,
                                 "type": "subscribe_events",
                                 "event_type": "mobile_app_notification_action",
-                            })
-                            sub_resp = await ws.receive_json()
-                            _LOGGER.debug("HA WS subscribed to notification events: %s", sub_resp)
+                            }
+                        )
+                        sub_resp = await ws.receive_json()
+                        _LOGGER.debug("HA WS subscribed to notification events: %s", sub_resp)
 
-                            # 3. Event loop
-                            async for ws_msg in ws:
-                                if ws_msg.type == aiohttp.WSMsgType.TEXT:
-                                    data = ws_msg.json()
-                                    if data.get("type") == "event":
-                                        event = data.get("event", {})
-                                        event_data = event.get("data", {})
-                                        action = event_data.get("action")
-                                        if action == "STREAMING_HUB_PLAY_NEXT":
-                                            await self.handle_next_episode_action(action="play_now")
-                                        elif action == "STREAMING_HUB_STOP":
-                                            await self.handle_next_episode_action(action="cancel")
-                                elif ws_msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                                    break
+                        # 3. Event loop
+                        async for ws_msg in ws:
+                            if ws_msg.type == aiohttp.WSMsgType.TEXT:
+                                data = ws_msg.json()
+                                if data.get("type") == "event":
+                                    event = data.get("event", {})
+                                    event_data = event.get("data", {})
+                                    action = event_data.get("action")
+                                    if action == "STREAMING_HUB_PLAY_NEXT":
+                                        await self.handle_next_episode_action(action="play_now")
+                                    elif action == "STREAMING_HUB_STOP":
+                                        await self.handle_next_episode_action(action="cancel")
+                            elif ws_msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
                 except asyncio.CancelledError:
                     break
                 except Exception as err:
@@ -816,9 +818,7 @@ class HACoreClient:
         }
 
         if media_type == "tv" and season_number is not None and episode_number is not None:
-            asyncio.create_task(
-                self._prepare_next_episode(entity_id, media_id, season_number, episode_number)
-            )
+            asyncio.create_task(self._prepare_next_episode(entity_id, media_id, season_number, episode_number))
 
         task = asyncio.create_task(
             self._track_cast_playback(
@@ -1004,7 +1004,9 @@ class HACoreClient:
         except Exception as err:
             _LOGGER.warning("Error in Cast tracker for %s: %s", entity_id, err)
         finally:
-            if entity_id in self._countdown_tasks and not self._active_cast_sessions.get(entity_id, {}).get("countdown_active"):
+            if entity_id in self._countdown_tasks and not self._active_cast_sessions.get(entity_id, {}).get(
+                "countdown_active"
+            ):
                 self._countdown_tasks[entity_id].cancel()
             if self._cast_trackers.get(entity_id) is asyncio.current_task():
                 self._cast_trackers.pop(entity_id, None)
