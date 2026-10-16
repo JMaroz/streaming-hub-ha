@@ -1419,10 +1419,9 @@ async def get_title_details(
         await metadata_enricher.enrich_movie(item, api_key=tmdb_key)
     elif isinstance(item, TvSeries):
         await metadata_enricher.enrich_tv_series(item, api_key=tmdb_key)
-        # Cache any pre-loaded seasons/episodes
-        for s in item.seasons:
-            if s.episodes:
-                await db.save_season(item.id, s)
+        # Cache any pre-loaded seasons/episodes concurrently
+        if item.seasons:
+            await asyncio.gather(*[db.save_season(item.id, s) for s in item.seasons if s.episodes])
 
     # Persist in SQLite
     await db.save_title(item)
