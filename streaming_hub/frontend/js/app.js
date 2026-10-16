@@ -1868,12 +1868,14 @@
     const id = item.id || item.media_id || item.title_id;
     if (id && typeof id === "string") {
       const clean = id.replace(/^sc-/, "");
-      if (clean.includes("-")) {
-        const slug = clean.split("-").slice(1).join("-").replace(/_s\d+e\d+$/, "");
-        const words = slug.replace(/[_-]+/g, " ").trim();
-        if (words) {
-          return words.split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-        }
+      let slug = clean.replace(/_s\d+e\d+$/, "");
+      const parts = slug.split("-");
+      if (parts.length > 1 && /^\d+$/.test(parts[0])) {
+        slug = parts.slice(1).join("-");
+      }
+      const words = slug.replace(/[_-]+/g, " ").trim();
+      if (words && !/^\d+$/.test(words)) {
+        return words.split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
       }
     }
     return "Senza Titolo";
@@ -2775,7 +2777,10 @@
         }
       }
 
-      const displayTitle = (currentItem ? getDisplayTitle(currentItem) : title) || "Streaming Hub";
+      const displayTitle = (isTv && title && title !== "Senza Titolo")
+        ? title
+        : ((title && title !== "Senza Titolo") ? title : (currentItem ? getDisplayTitle(currentItem) : "Streaming Hub"));
+
       const sessionData = {
         media_id: mediaId,
         title: displayTitle,
@@ -2793,6 +2798,7 @@
         media_id: source.media_id,
         quality: source.quality,
         prefer_fhd: true,
+        title: displayTitle,
       };
 
       const resp = await fetch(apiUrl("api/resolve"), {
@@ -2870,6 +2876,9 @@
         episode_number: epNum,
         seek_seconds: resumeSec,
         profile_id: state.activeProfileId,
+        year: currentItem ? currentItem.year : null,
+        tmdb_id: currentItem ? currentItem.tmdb_id : null,
+        imdb_id: currentItem ? currentItem.imdb_id : null,
       };
 
       const resp = await fetch(apiUrl("api/cast"), {
@@ -2913,11 +2922,59 @@
     }
   }
 
+  // Web MediaSession API Integration
+  function updateMediaSession(title) {
+    if (!("mediaSession" in navigator)) return;
+    const session = state.playbackSession;
+    if (!session) return;
+    try {
+      const isTv = session.media_type === "tv";
+      const artist = isTv ? (state.selectedItem ? (state.selectedItem.title || "Serie TV") : "Serie TV") : "Film";
+      const album = isTv && session.season_number ? `Stagione ${session.season_number}` : "";
+      const artUrl = session.poster_url ? getProxiedImageUrl(session.poster_url) : "";
+      const artwork = artUrl ? [{ src: artUrl, sizes: "512x512", type: "image/jpeg" }] : [];
+
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: title || session.title || "Streaming Hub",
+        artist: artist,
+        album: album,
+        artwork: artwork,
+      });
+
+      navigator.mediaSession.setActionHandler("play", () => {
+        if (elements.videoElement) elements.videoElement.play();
+      });
+      navigator.mediaSession.setActionHandler("pause", () => {
+        if (elements.videoElement) elements.videoElement.pause();
+      });
+      navigator.mediaSession.setActionHandler("seekforward", () => {
+        if (elements.videoElement) elements.videoElement.currentTime += 10;
+      });
+      navigator.mediaSession.setActionHandler("seekbackward", () => {
+        if (elements.videoElement) elements.videoElement.currentTime -= 10;
+      });
+    } catch (e) {
+      console.debug("MediaSession setup error:", e);
+    }
+  }
+
+  function clearMediaSession() {
+    if (!("mediaSession" in navigator)) return;
+    try {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.setActionHandler("play", null);
+      navigator.mediaSession.setActionHandler("pause", null);
+      navigator.mediaSession.setActionHandler("seekforward", null);
+      navigator.mediaSession.setActionHandler("seekbackward", null);
+    } catch (_) {}
+  }
+
   // Video Player Logic
   function openPlayer(streamUrl, title) {
     elements.playerTitle.textContent = title;
     elements.playerModal.classList.remove("hidden");
     elements.playerSpinner.classList.remove("hidden");
+    updateMediaSession(title);
 
     const video = elements.videoElement;
     if (video) {
@@ -3403,7 +3460,7 @@
       const streamData = await resolveResp.json();
       state.playbackSession = {
         media_id: nextData.series_id,
-        title: `${state.selectedItem ? state.selectedItem.title : "Serie TV"} - S${nextData.season_number}E${nextData.episode_number}`,
+        title: `${state.selectedItem ? state.selectedItem.title : "Serie TV"} - S${nextData.season_number}E${nextData.episode_number}${nextEp.title ? ": " + nextEp.title : ""}`,
         media_type: "tv",
         poster_url: nextEp.poster_url || (state.selectedItem ? state.selectedItem.poster_url : null),
         season_number: nextData.season_number,
@@ -3548,6 +3605,7 @@
       state.hls.destroy();
       state.hls = null;
     }
+    clearMediaSession();
     elements.videoElement.pause();
     elements.videoElement.removeAttribute("src");
     elements.videoElement.load();

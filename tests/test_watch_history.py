@@ -317,13 +317,19 @@ class TestWatchHistory:
         title_rec = asyncio.run(self.db.get_title_record("sc-530915-resident-evil-the-final-chapter"))
         assert title_rec is not None
         with self.db._get_connection() as conn:
-            row = conn.execute("SELECT title FROM titles WHERE id = 'sc-530915-resident-evil-the-final-chapter'").fetchone()
+            row = conn.execute(
+                "SELECT title FROM titles WHERE id = 'sc-530915-resident-evil-the-final-chapter'"
+            ).fetchone()
             assert row["title"] == "Resident Evil: The Final Chapter"
 
-            fav_row = conn.execute("SELECT title FROM favorites WHERE title_id = 'sc-530915-resident-evil-the-final-chapter'").fetchone()
+            fav_row = conn.execute(
+                "SELECT title FROM favorites WHERE title_id = 'sc-530915-resident-evil-the-final-chapter'"
+            ).fetchone()
             assert fav_row["title"] == "Resident Evil: The Final Chapter"
 
-            hist_row = conn.execute("SELECT title FROM watch_history WHERE media_id = 'sc-530915-resident-evil-the-final-chapter'").fetchone()
+            hist_row = conn.execute(
+                "SELECT title FROM watch_history WHERE media_id = 'sc-530915-resident-evil-the-final-chapter'"
+            ).fetchone()
             assert hist_row["title"] == "Resident Evil: The Final Chapter"
 
         # 4. Verify get_favorites and get_continue_watching return healed title

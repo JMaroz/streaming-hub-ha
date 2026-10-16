@@ -27,14 +27,12 @@ LOCAL_DATA_DIR = Path("./data")
 def slug_to_title(media_id: str) -> str:
     """Derive human-readable title from a media ID slug if possible."""
     clean = media_id.replace("sc-", "")
-    if "-" in clean:
-        parts = clean.split("-", 1)
-        slug_part = parts[1]
-        slug_part = re.sub(r"_s\d+e\d+$", "", slug_part)
-        words = re.sub(r"[_\-]+", " ", slug_part).strip().title()
-        if words:
-            return words
-    return ""
+    slug = re.sub(r"_s\d+e\d+$", "", clean)
+    parts = slug.split("-")
+    if len(parts) > 1 and parts[0].isdigit():
+        slug = "-".join(parts[1:])
+    words = re.sub(r"[_\-]+", " ", slug).strip().title()
+    return words if words and not words.isdigit() else ""
 
 
 def get_db_path() -> Path:
@@ -452,7 +450,7 @@ class MediaDatabase:
                     f"SELECT id, watch_providers FROM titles WHERE id IN ({placeholders})",
                     chunk,
                 )
-                for row in cursor.fetchall():
+                for row in cursor:
                     raw_wp = row["watch_providers"]
                     if raw_wp:
                         try:
@@ -548,14 +546,19 @@ class MediaDatabase:
                 chunk = keys[i : i + chunk_size]
                 placeholders = ",".join("?" * len(chunk))
                 cursor = conn.execute(
-                    f"SELECT id, certification, is_adult, duration, rating, watch_providers, genres, tmdb_id, source_a_url, source_b_url, poster_url, backdrop_url FROM titles WHERE id IN ({placeholders})",
+                    f"SELECT id, title, description, year, tmdb_id, imdb_id, certification, is_adult, duration, rating, watch_providers, genres, source_a_url, source_b_url, poster_url, backdrop_url FROM titles WHERE id IN ({placeholders})",
                     chunk,
                 )
-                for row in cursor.fetchall():
+                for row in cursor:
                     tid = str(row["id"])
                     target = id_map.get(tid)
                     if not target:
                         continue
+                    db_title = row["title"]
+                    db_desc = row["description"]
+                    db_year = row["year"]
+                    db_tmdb = row["tmdb_id"]
+                    db_imdb = row["imdb_id"]
                     cert = row["certification"]
                     is_adult_db = bool(row["is_adult"])
                     dur = row["duration"]
@@ -564,6 +567,41 @@ class MediaDatabase:
                     raw_g = row["genres"]
                     src_a = row["source_a_url"]
                     src_b = row["source_b_url"]
+
+                    if db_title and db_title.strip() != "Senza Titolo":
+                        if isinstance(target, dict):
+                            if not target.get("title") or target["title"].strip() in ("", "Senza Titolo"):
+                                target["title"] = db_title
+                        elif not getattr(target, "title", None) or target.title.strip() in ("", "Senza Titolo"):
+                            target.title = db_title
+
+                    if db_desc:
+                        if isinstance(target, dict):
+                            if not target.get("description"):
+                                target["description"] = db_desc
+                        elif not getattr(target, "description", None):
+                            target.description = db_desc
+
+                    if db_year:
+                        if isinstance(target, dict):
+                            if not target.get("year"):
+                                target["year"] = db_year
+                        elif not getattr(target, "year", None):
+                            target.year = db_year
+
+                    if db_tmdb:
+                        if isinstance(target, dict):
+                            if not target.get("tmdb_id"):
+                                target["tmdb_id"] = db_tmdb
+                        elif not getattr(target, "tmdb_id", None):
+                            target.tmdb_id = db_tmdb
+
+                    if db_imdb:
+                        if isinstance(target, dict):
+                            if not target.get("imdb_id"):
+                                target["imdb_id"] = db_imdb
+                        elif not getattr(target, "imdb_id", None):
+                            target.imdb_id = db_imdb
 
                     if cert:
                         if isinstance(target, dict):
@@ -640,6 +678,20 @@ class MediaDatabase:
                         elif not getattr(target, "source_b_url", None):
                             target.source_b_url = src_b
 
+        # Fallback to slug_to_title for any items that still lack a meaningful title
+        for it in items:
+            mid = it.get("id") if isinstance(it, dict) else getattr(it, "id", None)
+            if not mid:
+                continue
+            curr_title = it.get("title") if isinstance(it, dict) else getattr(it, "title", None)
+            if not curr_title or curr_title.strip() in ("", "Senza Titolo"):
+                derived = slug_to_title(str(mid))
+                if derived:
+                    if isinstance(it, dict):
+                        it["title"] = derived
+                    else:
+                        it.title = derived
+
     async def get_titles_by_genre(
         self,
         genre: str,
@@ -669,9 +721,8 @@ class MediaDatabase:
                 """,
                 (media_type, media_type, pattern, limit),
             )
-            rows = cursor.fetchall()
             items: list[Movie | TvSeries] = []
-            for row in rows:
+            for row in cursor:
                 if row["raw_json"]:
                     try:
                         data = json.loads(row["raw_json"])
@@ -901,18 +952,30 @@ class MediaDatabase:
                 # 1. Check existing watch_history record for this item
                 h_row = conn.execute("SELECT title, poster_url FROM watch_history WHERE id = ?", (hist_id,)).fetchone()
                 if h_row:
-                    if (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and h_row["title"] and h_row["title"] != "Senza Titolo":
+                    if (
+                        (not effective_title or effective_title.strip() in ("", "Senza Titolo"))
+                        and h_row["title"]
+                        and h_row["title"] != "Senza Titolo"
+                    ):
                         effective_title = h_row["title"]
                     if not effective_poster and h_row["poster_url"]:
                         effective_poster = h_row["poster_url"]
 
                 # 2. Check titles table
                 if not effective_title or effective_title.strip() in ("", "Senza Titolo") or not effective_poster:
-                    t_row = conn.execute("SELECT title, poster_url, raw_json FROM titles WHERE id = ?", (media_id,)).fetchone()
+                    t_row = conn.execute(
+                        "SELECT title, poster_url, raw_json FROM titles WHERE id = ?", (media_id,)
+                    ).fetchone()
                     if t_row:
-                        if (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["title"] and t_row["title"] != "Senza Titolo":
+                        if (
+                            (not effective_title or effective_title.strip() in ("", "Senza Titolo"))
+                            and t_row["title"]
+                            and t_row["title"] != "Senza Titolo"
+                        ):
                             effective_title = t_row["title"]
-                        elif (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["raw_json"]:
+                        elif (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row[
+                            "raw_json"
+                        ]:
                             with contextlib.suppress(Exception):
                                 raw_data = json.loads(t_row["raw_json"])
                                 effective_title = raw_data.get("name") or raw_data.get("title")
@@ -976,7 +1039,7 @@ class MediaDatabase:
                 """,
                 (profile_id, limit),
             )
-            return [dict(row) for row in cursor.fetchall()]
+            return [dict(row) for row in cursor]
 
     async def get_continue_watching(self, profile_id: str = "default", limit: int = 20) -> list[dict[str, Any]]:
         """Retrieve deduplicated in-progress movies and TV series for 'Continua a guardare'."""
@@ -1004,7 +1067,7 @@ class MediaDatabase:
                 LIMIT ?;
             """
             cursor = conn.execute(query, (profile_id, profile_id, limit * 2))
-            rows = [dict(r) for r in cursor.fetchall()]
+            rows = [dict(r) for r in cursor]
 
             results: list[dict[str, Any]] = []
             for r in rows:
@@ -1129,7 +1192,7 @@ class MediaDatabase:
                 LIMIT ?;
             """
             cursor = conn.execute(query, (profile_id, profile_id, limit * 2))
-            rows = [dict(r) for r in cursor.fetchall()]
+            rows = [dict(r) for r in cursor]
 
             results: list[dict[str, Any]] = []
             for r in rows:
@@ -1331,9 +1394,15 @@ class MediaDatabase:
             effective_title = title
             effective_poster = poster_url
             if not effective_title or effective_title.strip() in ("", "Senza Titolo") or not effective_poster:
-                t_row = conn.execute("SELECT title, poster_url, raw_json FROM titles WHERE id = ?", (title_id,)).fetchone()
+                t_row = conn.execute(
+                    "SELECT title, poster_url, raw_json FROM titles WHERE id = ?", (title_id,)
+                ).fetchone()
                 if t_row:
-                    if (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["title"] and t_row["title"] != "Senza Titolo":
+                    if (
+                        (not effective_title or effective_title.strip() in ("", "Senza Titolo"))
+                        and t_row["title"]
+                        and t_row["title"] != "Senza Titolo"
+                    ):
                         effective_title = t_row["title"]
                     elif (not effective_title or effective_title.strip() in ("", "Senza Titolo")) and t_row["raw_json"]:
                         with contextlib.suppress(Exception):
@@ -1366,7 +1435,7 @@ class MediaDatabase:
                 """
                 SELECT f.title_id, f.media_type, f.title, f.poster_url, f.added_at,
                        t.title as canonical_title, t.poster_url as canonical_poster,
-                       t.backdrop_url, t.description, t.year, t.rating, t.duration, t.raw_json
+                       t.backdrop_url, t.description, t.year, t.rating, t.duration, t.tmdb_id, t.raw_json
                 FROM favorites f
                 LEFT JOIN titles t ON f.title_id = t.id
                 WHERE f.profile_id = ?
@@ -1374,9 +1443,8 @@ class MediaDatabase:
                 """,
                 (profile_id,),
             )
-            rows = cursor.fetchall()
             results = []
-            for row in rows:
+            for row in cursor:
                 r = dict(row)
                 r["id"] = r["title_id"]
                 r["type"] = r["media_type"]
@@ -1387,6 +1455,8 @@ class MediaDatabase:
                     with contextlib.suppress(Exception):
                         raw_data = json.loads(r["raw_json"])
                         resolved_title = raw_data.get("name") or raw_data.get("title")
+                        if not r.get("tmdb_id") and raw_data.get("tmdb_id"):
+                            r["tmdb_id"] = raw_data.get("tmdb_id")
                 if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
                     resolved_title = slug_to_title(r["title_id"]) or "Senza Titolo"
                 r["title"] = resolved_title
@@ -1451,7 +1521,7 @@ class MediaDatabase:
                     "season_number": int(row["target_season"] or 1),
                     "age_seconds": int(row["age_seconds"]) if row["age_seconds"] is not None else None,
                 }
-                for row in cursor_tv.fetchall()
+                for row in cursor_tv
             ]
 
             # 2. Movie candidates from active watch history (last 14 days) and favorites:
@@ -1490,7 +1560,7 @@ class MediaDatabase:
                         "season_number": None,
                         "age_seconds": int(row["age_seconds"]) if row["age_seconds"] is not None else None,
                     }
-                    for row in cursor_movie.fetchall()
+                    for row in cursor_movie
                 ]
 
             return tv_candidates + movie_candidates
@@ -1629,7 +1699,137 @@ class MediaDatabase:
                 """,
                 (limit,),
             )
-            return [dict(r) for r in cursor.fetchall()]
+            return [dict(r) for r in cursor]
+
+    async def import_favorites_batch(
+        self,
+        items: list[dict[str, Any]],
+        media_type: str,
+        profile_id: str = "default",
+    ) -> int:
+        """Batch import TMDb items as favorites using efficient bulk queries and single-transaction insertion."""
+        if not items:
+            return 0
+        async with self._lock:
+            return await asyncio.to_thread(self._import_favorites_batch_sync, items, media_type, profile_id)
+
+    def _import_favorites_batch_sync(
+        self,
+        items: list[dict[str, Any]],
+        media_type: str,
+        profile_id: str,
+    ) -> int:
+        valid_items: list[dict[str, Any]] = []
+        tmdb_ids: list[int] = []
+        titles_lower: list[str] = []
+
+        for item in items:
+            tmdb_id = item.get("id")
+            if not tmdb_id:
+                continue
+            title = item.get("title") or item.get("name") or "Senza Titolo"
+            poster_path = item.get("poster_path")
+            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
+            valid_items.append(
+                {
+                    "tmdb_id": int(tmdb_id),
+                    "title": title,
+                    "poster_url": poster_url,
+                }
+            )
+            tmdb_ids.append(int(tmdb_id))
+            if title:
+                titles_lower.append(title.strip().lower())
+
+        if not valid_items:
+            return 0
+
+        with self._get_connection() as conn:
+            # 1. Bulk query existing titles by tmdb_id
+            existing_by_tmdb: dict[int, str] = {}
+            chunk_size = 100
+            for i in range(0, len(tmdb_ids), chunk_size):
+                chunk = tmdb_ids[i : i + chunk_size]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = conn.execute(
+                    f"SELECT id, tmdb_id FROM titles WHERE tmdb_id IN ({placeholders})",
+                    chunk,
+                )
+                for row in cursor:
+                    existing_by_tmdb[int(row["tmdb_id"])] = str(row["id"])
+
+            # 2. Bulk query existing titles by lower title (for items not matched by tmdb_id)
+            existing_by_title: dict[str, str] = {}
+            if titles_lower:
+                for i in range(0, len(titles_lower), chunk_size):
+                    chunk = titles_lower[i : i + chunk_size]
+                    placeholders = ",".join("?" * len(chunk))
+                    q = f"SELECT id, LOWER(title) as ltitle FROM titles WHERE LOWER(title) IN ({placeholders})"
+                    params: list[Any] = list(chunk)
+                    if media_type:
+                        q += " AND media_type = ?"
+                        params.append(media_type)
+                    cursor = conn.execute(q, params)
+                    for row in cursor:
+                        existing_by_title[str(row["ltitle"])] = str(row["id"])
+
+            # 3. Bulk query existing favorites for profile
+            existing_fav_title_ids: set[str] = set()
+            candidate_title_ids: list[str] = []
+            prepared_records: list[tuple[str, str, str, str, str, str]] = []
+
+            for item in valid_items:
+                t_id = existing_by_tmdb.get(item["tmdb_id"])
+                if not t_id:
+                    t_id = existing_by_title.get(item["title"].strip().lower())
+                if not t_id:
+                    t_id = f"tmdb-{item['tmdb_id']}"
+
+                fav_id = f"fav_{profile_id}_{t_id}"
+                candidate_title_ids.append(t_id)
+                prepared_records.append(
+                    (
+                        fav_id,
+                        profile_id,
+                        t_id,
+                        media_type,
+                        item["title"],
+                        item["poster_url"],
+                    )
+                )
+
+            for i in range(0, len(candidate_title_ids), chunk_size):
+                chunk = candidate_title_ids[i : i + chunk_size]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = conn.execute(
+                    f"SELECT title_id FROM favorites WHERE profile_id = ? AND title_id IN ({placeholders})",
+                    [profile_id, *chunk],
+                )
+                for row in cursor:
+                    existing_fav_title_ids.add(str(row["title_id"]))
+
+            # 4. Filter and insert non-duplicate favorites in one transaction
+            to_insert = [rec for rec in prepared_records if rec[2] not in existing_fav_title_ids]
+            if not to_insert:
+                return 0
+
+            # Deduplicate within to_insert batch by fav_id/title_id
+            seen_in_batch: set[str] = set()
+            unique_to_insert: list[tuple[str, str, str, str, str, str]] = []
+            for rec in to_insert:
+                if rec[0] not in seen_in_batch:
+                    seen_in_batch.add(rec[0])
+                    unique_to_insert.append(rec)
+
+            conn.executemany(
+                """
+                INSERT INTO favorites (id, profile_id, title_id, media_type, title, poster_url, added_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO NOTHING;
+                """,
+                unique_to_insert,
+            )
+            return len(unique_to_insert)
 
     async def find_title_by_tmdb_or_query(
         self,

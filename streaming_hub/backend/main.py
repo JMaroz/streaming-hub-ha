@@ -242,8 +242,11 @@ async def _background_sync_worker() -> None:
                         if fresh_season and fresh_season.episodes:
                             title_data = await db.get_title(media_id)
                             tmdb_id = title_data.get("tmdb_id") if title_data else None
-                            if tmdb_id:
-                                await metadata_enricher.enrich_tv_season(tmdb_id, fresh_season)
+                            imdb_id = title_data.get("imdb_id") if title_data else None
+                            s_title = title_data.get("title") if title_data else None
+                            await metadata_enricher.enrich_tv_season(
+                                tmdb_id, fresh_season, imdb_id=imdb_id, series_title=s_title
+                            )
                             await db.save_season(media_id, fresh_season)
                     elif media_type == "movie":
                         _LOGGER.debug("Background syncing movie %s", media_id)
@@ -321,6 +324,7 @@ class ResolveRequest(BaseModel):
     media_id: str | None = None
     quality: str | None = None
     prefer_fhd: bool = True
+    title: str | None = None
 
 
 class CastRequest(BaseModel):
@@ -859,29 +863,11 @@ async def sync_tmdb_account(req: TmdbAccountSyncRequest) -> dict[str, Any]:
 
     # Helper to add TMDb item to local favorites
     async def _import_items(items: list[dict[str, Any]], media_type: str) -> int:
-        count = 0
-        for item in items:
-            tmdb_id = item.get("id")
-            if not tmdb_id:
-                continue
-            title = item.get("title") or item.get("name") or "Senza Titolo"
-            poster_path = item.get("poster_path")
-            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
-
-            # Check if matching local title exists
-            existing = await db.find_title_by_tmdb_or_query(title=title, media_type=media_type, tmdb_id=tmdb_id)
-            title_id = existing["id"] if existing else f"tmdb-{tmdb_id}"
-
-            added = await db.add_favorite(
-                title_id=title_id,
-                media_type=media_type,
-                title=title,
-                poster_url=poster_url,
-                profile_id=profile.id,
-            )
-            if added:
-                count += 1
-        return count
+        return await db.import_favorites_batch(
+            items=items,
+            media_type=media_type,
+            profile_id=profile.id,
+        )
 
     imported_favorites += await _import_items(fav_movies, "movie")
     imported_favorites += await _import_items(fav_tv, "tv")
@@ -891,21 +877,32 @@ async def sync_tmdb_account(req: TmdbAccountSyncRequest) -> dict[str, Any]:
     # 2. Push local favorites with tmdb_id back to TMDb favorites (bidirectional sync)
     pushed_count = 0
     local_favs = await db.get_favorites(profile_id=profile.id)
-    for fav in local_favs:
-        t_id = fav.get("id", "")
-        t_rec = await db.get_title(t_id)
-        if t_rec and t_rec.get("tmdb_id"):
-            m_type = "movie" if fav.get("type") == "movie" else "tv"
-            success = await metadata_enricher.post_account_favorite(
+    sem = asyncio.Semaphore(10)
+
+    async def _push_fav(fav: dict[str, Any]) -> bool:
+        tmdb_id = fav.get("tmdb_id")
+        if not tmdb_id:
+            t_id = fav.get("id", "")
+            t_rec = await db.get_title(t_id)
+            if t_rec:
+                tmdb_id = t_rec.get("tmdb_id")
+        if not tmdb_id:
+            return False
+
+        m_type = "movie" if fav.get("type") == "movie" else "tv"
+        async with sem:
+            return await metadata_enricher.post_account_favorite(
                 session_id=session_id,
                 account_id=account_id,
                 media_type=m_type,
-                media_id=int(t_rec["tmdb_id"]),
+                media_id=int(tmdb_id),
                 favorite=True,
                 api_key=tmdb_key,
             )
-            if success:
-                pushed_count += 1
+
+    if local_favs:
+        push_results = await asyncio.gather(*[_push_fav(fav) for fav in local_favs], return_exceptions=True)
+        pushed_count = sum(1 for res in push_results if res is True)
 
     total_synced = imported_favorites + imported_watchlist + pushed_count
     return {
@@ -1422,10 +1419,9 @@ async def get_title_details(
         await metadata_enricher.enrich_movie(item, api_key=tmdb_key)
     elif isinstance(item, TvSeries):
         await metadata_enricher.enrich_tv_series(item, api_key=tmdb_key)
-        # Cache any pre-loaded seasons/episodes
-        for s in item.seasons:
-            if s.episodes:
-                await db.save_season(item.id, s)
+        # Cache any pre-loaded seasons/episodes concurrently
+        if item.seasons:
+            await asyncio.gather(*[db.save_season(item.id, s) for s in item.seasons if s.episodes])
 
     # Persist in SQLite
     await db.save_title(item)
@@ -1548,11 +1544,12 @@ async def get_season_episodes(
         season = await source_manager.get_season(series_id, season_number)
         if not season or not season.episodes or season.number != season_number:
             raise HTTPException(status_code=404, detail=f"Stagione {season_number} non trovata")
-        # Enrich season episodes with TMDb if tmdb_id is available
+        # Enrich season episodes with TMDb, Cinemeta, or TVmaze
         title_data = await db.get_title(series_id)
         tmdb_id = title_data.get("tmdb_id") if title_data else None
-        if tmdb_id:
-            await metadata_enricher.enrich_tv_season(tmdb_id, season)
+        imdb_id = title_data.get("imdb_id") if title_data else None
+        s_title = title_data.get("title") if title_data else None
+        await metadata_enricher.enrich_tv_season(tmdb_id, season, imdb_id=imdb_id, series_title=s_title)
         await db.save_season(series_id, season)
         res = season.to_dict()
         res["age_seconds"] = 0
@@ -1581,7 +1578,11 @@ async def save_progress(req: ProgressRequest) -> dict[str, Any]:
             try:
                 cached_title = await db.get_title(req.media_id)
                 if cached_title:
-                    if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and cached_title.get("title") and cached_title["title"] != "Senza Titolo":
+                    if (
+                        (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"))
+                        and cached_title.get("title")
+                        and cached_title["title"] != "Senza Titolo"
+                    ):
                         resolved_title = cached_title["title"]
                     if not resolved_poster and cached_title.get("poster_url"):
                         resolved_poster = cached_title["poster_url"]
@@ -1689,7 +1690,11 @@ async def toggle_favorite(req: FavoriteRequest) -> dict[str, Any]:
             try:
                 cached_title = await db.get_title(req.title_id)
                 if cached_title:
-                    if (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo")) and cached_title.get("title") and cached_title["title"] != "Senza Titolo":
+                    if (
+                        (not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"))
+                        and cached_title.get("title")
+                        and cached_title["title"] != "Senza Titolo"
+                    ):
                         resolved_title = cached_title["title"]
                     if not resolved_poster and cached_title.get("poster_url"):
                         resolved_poster = cached_title["poster_url"]
@@ -1764,7 +1769,7 @@ async def resolve_media_source(req: ResolveRequest, request: Request) -> dict[st
         _LOGGER.error("Failed to resolve source %s: %s", req.page_url, err)
         raise HTTPException(status_code=400, detail=f"Risoluzione stream fallita: {err}")
 
-    token = stream_proxy.register_stream(resolved)
+    token = stream_proxy.register_stream(resolved, media_title=req.title or req.media_id)
     ingress_path = get_ingress_path(request)
     ha_host = await ha_client.get_host_ip_or_url()
     stream_port = CONFIG.get("stream_port", 8099)
@@ -1832,15 +1837,6 @@ async def cast_to_device(req: CastRequest) -> dict[str, Any]:
         _LOGGER.error("Failed to resolve stream for casting: %s", err)
         raise HTTPException(status_code=400, detail=f"Risoluzione stream fallita: {err}")
 
-    token = stream_proxy.register_stream(resolved)
-    ha_host = await ha_client.get_host_ip_or_url()
-    stream_port = CONFIG.get("stream_port", 8099)
-
-    lan_stream_url = f"http://{ha_host}:{stream_port}/stream/{token}"
-    _LOGGER.info("Sending Cast command to %s with stream: %s", req.entity_id, lan_stream_url)
-
-    subtitles_list = [s.to_dict() for s in resolved.subtitles] if resolved.subtitles else None
-
     # Resolve title and poster if missing, placeholder, or generic fallback
     resolved_title = req.title
     resolved_poster = req.poster_url
@@ -1852,18 +1848,41 @@ async def cast_to_device(req: CastRequest) -> dict[str, Any]:
         except Exception:
             pass
 
+    series_name: str | None = None
     if cached_title_record:
+        canonical = cached_title_record.get("title")
+        if canonical and canonical != "Senza Titolo":
+            series_name = canonical
         if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
-            resolved_title = cached_title_record.get("title")
-        elif resolved_title.startswith("Serie TV - S") and cached_title_record.get("title") and cached_title_record["title"] != "Senza Titolo":
-            ep_part = resolved_title.replace("Serie TV - ", "")
-            resolved_title = f"{cached_title_record['title']} - {ep_part}"
+            resolved_title = canonical
+        elif (
+            (resolved_title.startswith("Serie TV - S") or resolved_title.startswith("Senza Titolo - S"))
+            and canonical
+            and canonical != "Senza Titolo"
+        ):
+            ep_part = re.sub(r"^(?:Serie TV|Senza Titolo) - ", "", resolved_title)
+            resolved_title = f"{canonical} - {ep_part}"
 
         if not resolved_poster and cached_title_record.get("poster_url"):
             resolved_poster = cached_title_record["poster_url"]
 
     if not resolved_title or str(resolved_title).strip() in ("", "Senza Titolo"):
         resolved_title = slug_to_title(req.media_id or "") or "Senza Titolo"
+
+    if not series_name:
+        if req.media_type == "tv":
+            series_name = resolved_title.split(" - S")[0] if " - S" in resolved_title else resolved_title
+        else:
+            series_name = resolved_title
+
+    token = stream_proxy.register_stream(resolved, media_title=resolved_title)
+    ha_host = await ha_client.get_host_ip_or_url()
+    stream_port = CONFIG.get("stream_port", 8099)
+
+    lan_stream_url = f"http://{ha_host}:{stream_port}/stream/{token}"
+    _LOGGER.info("Sending Cast command to %s with stream: %s", req.entity_id, lan_stream_url)
+
+    subtitles_list = [s.to_dict() for s in resolved.subtitles] if resolved.subtitles else None
 
     success, actual_entity = await ha_client.play_on_device(
         entity_id=req.entity_id,
@@ -1872,6 +1891,10 @@ async def cast_to_device(req: CastRequest) -> dict[str, Any]:
         poster_url=resolved_poster,
         mime_type=resolved.mime_type or "application/vnd.apple.mpegurl",
         subtitles=subtitles_list,
+        media_type=req.media_type,
+        series_title=series_name,
+        season_number=req.season_number,
+        episode_number=req.episode_number,
     )
 
     if not success:
@@ -1940,8 +1963,9 @@ async def get_next_episode_endpoint(
             if curr_season and curr_season.episodes and curr_season.number == season_number:
                 title_data = await db.get_title(series_id)
                 tmdb_id = title_data.get("tmdb_id") if title_data else None
-                if tmdb_id:
-                    await metadata_enricher.enrich_tv_season(tmdb_id, curr_season)
+                imdb_id = title_data.get("imdb_id") if title_data else None
+                s_title = title_data.get("title") if title_data else None
+                await metadata_enricher.enrich_tv_season(tmdb_id, curr_season, imdb_id=imdb_id, series_title=s_title)
                 await db.save_season(series_id, curr_season)
                 next_ep = await db.get_next_episode(series_id, season_number, episode_number)
         except Exception as err:
@@ -1965,8 +1989,11 @@ async def get_next_episode_endpoint(
                 next_season = await source_manager.get_season(series_id, target_next_season)
                 if next_season and next_season.episodes and next_season.number == target_next_season:
                     tmdb_id = title_data.get("tmdb_id") if title_data else None
-                    if tmdb_id:
-                        await metadata_enricher.enrich_tv_season(tmdb_id, next_season)
+                    imdb_id = title_data.get("imdb_id") if title_data else None
+                    s_title = title_data.get("title") if title_data else None
+                    await metadata_enricher.enrich_tv_season(
+                        tmdb_id, next_season, imdb_id=imdb_id, series_title=s_title
+                    )
                     await db.save_season(series_id, next_season)
                     next_ep = await db.get_next_episode(series_id, season_number, episode_number)
         except Exception as err:

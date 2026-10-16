@@ -30,6 +30,7 @@ class StreamSession:
     created_at: datetime
     expires_at: datetime
     remux_audio: bool = False
+    media_title: str | None = None
 
 
 class StreamProxy:
@@ -53,7 +54,12 @@ class StreamProxy:
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
 
-    def register_stream(self, resolved: ResolvedMedia, remux_audio: bool = False) -> str:
+    def register_stream(
+        self,
+        resolved: ResolvedMedia,
+        remux_audio: bool = False,
+        media_title: str | None = None,
+    ) -> str:
         """Register a resolved media stream and return a secure access token."""
         self._purge_expired()
         token = secrets.token_urlsafe(16)
@@ -70,6 +76,7 @@ class StreamProxy:
             created_at=now,
             expires_at=now + self.ttl,
             remux_audio=remux_audio,
+            media_title=media_title,
         )
         self._sessions[token] = session
         return token
@@ -201,14 +208,20 @@ class StreamProxy:
                         detail=f"Upstream returned HTTP {upstream.status}",
                     )
 
+                resp_headers = {
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Access-Control-Allow-Origin": "*",
+                }
+                if session.media_title:
+                    clean_filename = re.sub(r'["\r\n\\]', "", session.media_title).strip()
+                    if clean_filename:
+                        resp_headers["Content-Disposition"] = f'inline; filename="{clean_filename}.m3u8"'
+
                 if method.upper() == "HEAD":
                     return Response(
                         status_code=upstream.status,
                         media_type="application/vnd.apple.mpegurl",
-                        headers={
-                            "Cache-Control": "no-cache, no-store, must-revalidate",
-                            "Access-Control-Allow-Origin": "*",
-                        },
+                        headers=resp_headers,
                     )
 
                 raw_text = await upstream.text()
@@ -217,10 +230,7 @@ class StreamProxy:
                 return Response(
                     content=rewritten,
                     media_type="application/vnd.apple.mpegurl",
-                    headers={
-                        "Cache-Control": "no-cache, no-store, must-revalidate",
-                        "Access-Control-Allow-Origin": "*",
-                    },
+                    headers=resp_headers,
                 )
         except HTTPException:
             raise
@@ -355,13 +365,18 @@ class StreamProxy:
             if b"#EXTM3U" in raw_bytes[:512]:
                 raw_text = raw_bytes.decode("utf-8", errors="replace")
                 rewritten = self.rewrite_m3u8(raw_text, str(upstream_resp.url), token, root_path=root_path)
+                m3u8_headers = {
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Access-Control-Allow-Origin": "*",
+                }
+                if session.media_title:
+                    clean_filename = re.sub(r'["\r\n\\]', "", session.media_title).strip()
+                    if clean_filename:
+                        m3u8_headers["Content-Disposition"] = f'inline; filename="{clean_filename}.m3u8"'
                 return Response(
                     content=rewritten,
                     media_type="application/vnd.apple.mpegurl",
-                    headers={
-                        "Cache-Control": "no-cache, no-store, must-revalidate",
-                        "Access-Control-Allow-Origin": "*",
-                    },
+                    headers=m3u8_headers,
                 )
 
             # Refine media content type based on binary signature if applicable
@@ -379,6 +394,11 @@ class StreamProxy:
                 elif content_type.lower().startswith("text/"):
                     content_type = "video/MP2T"
                 out_headers["Content-Type"] = content_type
+
+            if content_type == "video/mp4" and session.media_title:
+                clean_filename = re.sub(r'["\r\n\\]', "", session.media_title).strip()
+                if clean_filename:
+                    out_headers["Content-Disposition"] = f'inline; filename="{clean_filename}.mp4"'
 
             out_headers["Content-Length"] = str(len(raw_bytes))
 

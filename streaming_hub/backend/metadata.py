@@ -63,11 +63,32 @@ class MetadataEnricher:
 
     @staticmethod
     def _clean_title(title: str) -> str:
-        """Strip quality and noise from title for cleaner metadata search."""
+        """Strip quality, season, and marketing noise from title for cleaner metadata search."""
+        if not title:
+            return ""
         t = re.sub(r"\[.*?\]", "", title)
         t = re.sub(r"\(.*?\)", "", t)
-        t = re.sub(r"\b(4k|fhd|hd|sd|streaming|ita|subita)\b", "", t, flags=re.IGNORECASE)
+        t = re.sub(
+            r"\s*-\s*(?:serie\s*tv|stagione\s*\d+|season\s*\d+|miniserie|film(?:\s*completo)?|gratis|altadefinizione).*$",
+            "",
+            t,
+            flags=re.IGNORECASE,
+        )
+        t = re.sub(r"\b(?:serie\s*tv|stagione\s*\d+|season\s*\d+|miniserie)\b", "", t, flags=re.IGNORECASE)
+        t = re.sub(r"\b(4k|fhd|hd|sd|streaming|ita|subita|sub-ita)\b", "", t, flags=re.IGNORECASE)
+        t = re.sub(r"[\s\-_:]+$", "", t)
         return " ".join(t.split())
+
+    @staticmethod
+    def _slug_to_search_title(media_id: str) -> str:
+        """Derive clean human-readable search title from a media ID slug."""
+        clean = media_id.replace("sc-", "")
+        slug = re.sub(r"_s\d+e\d+$", "", clean)
+        parts = slug.split("-")
+        if len(parts) > 1 and parts[0].isdigit():
+            slug = "-".join(parts[1:])
+        words = re.sub(r"[_\-]+", " ", slug).strip()
+        return words if words and not words.isdigit() else ""
 
     async def _get_json(
         self,
@@ -302,9 +323,7 @@ class MetadataEnricher:
         if not metadata and not movie.imdb_id:
             search_title = movie.title
             if (not search_title or search_title.strip() == "Senza Titolo") and movie.id:
-                clean_id = movie.id.replace("sc-", "")
-                if "-" in clean_id:
-                    search_title = clean_id.split("-", 1)[1].replace("-", " ")
+                search_title = self._slug_to_search_title(movie.id)
             if search_title and search_title.strip() != "Senza Titolo":
                 movie.imdb_id = await self._search_cinemeta_imdb_id("movie", search_title)
 
@@ -335,9 +354,7 @@ class MetadataEnricher:
         if not metadata and not series.imdb_id:
             search_title = series.title
             if (not search_title or search_title.strip() == "Senza Titolo") and series.id:
-                clean_id = series.id.replace("sc-", "")
-                if "-" in clean_id:
-                    search_title = clean_id.split("-", 1)[1].replace("-", " ")
+                search_title = self._slug_to_search_title(series.id)
             if search_title and search_title.strip() != "Senza Titolo":
                 series.imdb_id = await self._search_cinemeta_imdb_id("series", search_title)
 
@@ -347,15 +364,16 @@ class MetadataEnricher:
         if not metadata:
             search_title = series.title
             if (not search_title or search_title.strip() == "Senza Titolo") and series.id:
-                clean_id = series.id.replace("sc-", "")
-                if "-" in clean_id:
-                    search_title = clean_id.split("-", 1)[1].replace("-", " ")
+                search_title = self._slug_to_search_title(series.id)
             if search_title and search_title.strip() != "Senza Titolo":
                 metadata = await self._fetch_tvmaze(search_title)
 
         if metadata:
             self._cache[cache_key] = metadata
             self._apply_tv_metadata(series, metadata)
+            if series.seasons:
+                for s in series.seasons:
+                    await self.enrich_tv_season(series.tmdb_id, s, imdb_id=series.imdb_id, series_title=series.title)
 
         return series
 
@@ -365,12 +383,11 @@ class MetadataEnricher:
         try:
             tmdb_id = movie.tmdb_id
             if not tmdb_id:
-                clean_title = self._clean_title(movie.title) if movie.title and movie.title.strip() != "Senza Titolo" else ""
+                clean_title = (
+                    self._clean_title(movie.title) if movie.title and movie.title.strip() != "Senza Titolo" else ""
+                )
                 if not clean_title and movie.id:
-                    clean_id = movie.id.replace("sc-", "")
-                    if "-" in clean_id:
-                        slug_part = clean_id.split("-", 1)[1]
-                        clean_title = self._clean_title(slug_part.replace("-", " "))
+                    clean_title = self._clean_title(self._slug_to_search_title(movie.id))
                 if clean_title:
                     search_url = f"{TMDB_BASE_URL}/search/movie"
                     params: dict[str, Any] = {"query": clean_title, "language": "it-IT", **auth_params}
@@ -396,12 +413,11 @@ class MetadataEnricher:
         try:
             tmdb_id = series.tmdb_id
             if not tmdb_id:
-                clean_title = self._clean_title(series.title) if series.title and series.title.strip() != "Senza Titolo" else ""
+                clean_title = (
+                    self._clean_title(series.title) if series.title and series.title.strip() != "Senza Titolo" else ""
+                )
                 if not clean_title and series.id:
-                    clean_id = series.id.replace("sc-", "")
-                    if "-" in clean_id:
-                        slug_part = clean_id.split("-", 1)[1]
-                        clean_title = self._clean_title(slug_part.replace("-", " "))
+                    clean_title = self._clean_title(self._slug_to_search_title(series.id))
                 if clean_title:
                     search_url = f"{TMDB_BASE_URL}/search/tv"
                     params: dict[str, Any] = {"query": clean_title, "language": "it-IT", **auth_params}
@@ -433,6 +449,35 @@ class MetadataEnricher:
             return data.get("meta")
         return None
 
+    async def _fetch_cinemeta_series_videos(self, imdb_id: str) -> list[dict[str, Any]]:
+        """Fetch all episodes for a TV series from Cinemeta with memory caching."""
+        cache_key = f"cinemeta:series:{imdb_id}"
+        if cache_key in self._cache:
+            cached_val = self._cache[cache_key]
+            if isinstance(cached_val, dict) and "videos" in cached_val:
+                return cached_val.get("videos") or []
+        data = await self._fetch_cinemeta("series", imdb_id)
+        if data and isinstance(data, dict):
+            self._cache[cache_key] = data
+            return data.get("videos") or []
+        return []
+
+    async def _fetch_tvmaze_episodes(self, clean_title: str) -> list[dict[str, Any]]:
+        """Fetch all episodes for a TV show from TVmaze with memory caching."""
+        cache_key = f"tvmaze:episodes:{clean_title.lower()}"
+        if cache_key in self._cache:
+            cached_val = self._cache[cache_key]
+            if isinstance(cached_val, list):
+                return cached_val
+        url = f"https://api.tvmaze.com/singlesearch/shows?q={quote_plus(clean_title)}&embed=episodes"
+        data = await self._get_json(url)
+        if data and isinstance(data, dict):
+            embedded = data.get("_embedded", {})
+            eps = embedded.get("episodes", []) if isinstance(embedded, dict) else []
+            self._cache[cache_key] = eps
+            return eps
+        return []
+
     async def _fetch_tvmaze(self, title: str) -> dict[str, Any] | None:
         """Fetch TV show metadata from TVmaze API."""
         clean_title = self._clean_title(title)
@@ -461,10 +506,7 @@ class MetadataEnricher:
         # Ensure title is populated if missing or placeholder
         if not movie.title or movie.title.strip() in ("", "Senza Titolo"):
             resolved_title = (
-                meta.get("title")
-                or meta.get("name")
-                or meta.get("original_title")
-                or meta.get("original_name")
+                meta.get("title") or meta.get("name") or meta.get("original_title") or meta.get("original_name")
             )
             if resolved_title:
                 movie.title = str(resolved_title)
@@ -579,10 +621,7 @@ class MetadataEnricher:
         # Ensure title is populated if missing or placeholder
         if not series.title or series.title.strip() in ("", "Senza Titolo"):
             resolved_title = (
-                meta.get("name")
-                or meta.get("title")
-                or meta.get("original_name")
-                or meta.get("original_title")
+                meta.get("name") or meta.get("title") or meta.get("original_name") or meta.get("original_title")
             )
             if resolved_title:
                 series.title = str(resolved_title)
@@ -678,35 +717,115 @@ class MetadataEnricher:
                 ):
                     series.is_adult = True
 
-    async def enrich_tv_season(self, series_tmdb_id: int | None, season: Any) -> Any:
-        """Enrich TV season episodes with TMDb episode titles, overviews, and screenshots."""
-        if not self.tmdb_api_key or not series_tmdb_id:
+    async def enrich_tv_season(
+        self,
+        series_tmdb_id: int | None,
+        season: Any,
+        imdb_id: str | None = None,
+        series_title: str | None = None,
+    ) -> Any:
+        """Enrich TV season episodes with titles, overviews, and screenshots via TMDb, Cinemeta, or TVmaze."""
+        enriched = False
+
+        # 1. Primary: TMDb API (if configured and tmdb_id present)
+        if self.tmdb_api_key and series_tmdb_id:
+            auth_headers, auth_params = self._get_tmdb_auth()
+            season_url = f"{TMDB_BASE_URL}/tv/{series_tmdb_id}/season/{season.number}"
+            params = {"language": "it-IT", **auth_params}
+            try:
+                data = await self._get_json(season_url, params=params, headers=auth_headers)
+                if data and "episodes" in data:
+                    tmdb_eps = {e["episode_number"]: e for e in data["episodes"] if "episode_number" in e}
+                    for ep in season.episodes:
+                        t_ep = tmdb_eps.get(ep.episode_number)
+                        if not t_ep:
+                            continue
+                        ep_name = (t_ep.get("name") or "").strip()
+                        if ep_name:
+                            if not ep.title or ep.title.lower().startswith("episodio"):
+                                ep.title = f"Episodio {ep.episode_number}: {ep_name}"
+                            else:
+                                ep.title = f"{ep.title} - {ep_name}"
+                        if t_ep.get("overview") and not ep.description:
+                            ep.description = t_ep["overview"]
+                        if t_ep.get("still_path") and not ep.poster_url:
+                            ep.poster_url = f"{TMDB_IMAGE_BASE}{t_ep['still_path']}"
+                    enriched = True
+            except Exception as err:
+                _LOGGER.debug("TMDb enrich season %s failed: %s", season.number, err)
+
+        if enriched:
             return season
 
-        auth_headers, auth_params = self._get_tmdb_auth()
-        season_url = f"{TMDB_BASE_URL}/tv/{series_tmdb_id}/season/{season.number}"
-        params = {"language": "it-IT", **auth_params}
-        try:
-            data = await self._get_json(season_url, params=params, headers=auth_headers)
-            if not data or "episodes" not in data:
-                return season
+        # 2. Fallback 1: Cinemeta using IMDb ID
+        if imdb_id and str(imdb_id).startswith("tt"):
+            try:
+                videos = await self._fetch_cinemeta_series_videos(imdb_id)
+                if videos:
+                    season_videos = {
+                        v.get("episode") or v.get("number"): v
+                        for v in videos
+                        if v.get("season") == season.number and (v.get("episode") or v.get("number")) is not None
+                    }
+                    if season_videos:
+                        for ep in season.episodes:
+                            c_ep = season_videos.get(ep.episode_number)
+                            if not c_ep:
+                                continue
+                            ep_name = (c_ep.get("name") or "").strip()
+                            if ep_name:
+                                if not ep.title or ep.title.lower().startswith("episodio"):
+                                    ep.title = f"Episodio {ep.episode_number}: {ep_name}"
+                                else:
+                                    ep.title = f"{ep.title} - {ep_name}"
+                            overview = c_ep.get("overview") or c_ep.get("description")
+                            if overview and not ep.description:
+                                ep.description = str(overview).strip()
+                            thumb = c_ep.get("thumbnail")
+                            if thumb and not ep.poster_url:
+                                ep.poster_url = str(thumb).strip()
+                        enriched = True
+            except Exception as err:
+                _LOGGER.debug("Cinemeta enrich season %s failed: %s", season.number, err)
 
-            tmdb_eps = {e["episode_number"]: e for e in data["episodes"] if "episode_number" in e}
-            for ep in season.episodes:
-                t_ep = tmdb_eps.get(ep.episode_number)
-                if not t_ep:
-                    continue
-                ep_name = (t_ep.get("name") or "").strip()
-                if ep_name:
-                    if not ep.title or ep.title.lower().startswith("episodio"):
-                        ep.title = f"Episodio {ep.episode_number}: {ep_name}"
-                    else:
-                        ep.title = f"{ep.title} - {ep_name}"
-                if t_ep.get("overview") and not ep.description:
-                    ep.description = t_ep["overview"]
-                if t_ep.get("still_path") and not ep.poster_url:
-                    ep.poster_url = f"{TMDB_IMAGE_BASE}{t_ep['still_path']}"
-        except Exception as err:
-            _LOGGER.debug("TMDb enrich season %s failed: %s", season.number, err)
+        if enriched:
+            return season
+
+        # 3. Fallback 2: TVmaze using series title
+        if series_title and series_title.strip() != "Senza Titolo":
+            clean_s_title = self._clean_title(series_title)
+            if clean_s_title:
+                try:
+                    tvm_eps = await self._fetch_tvmaze_episodes(clean_s_title)
+                    if tvm_eps:
+                        season_tvm = {
+                            e.get("number"): e
+                            for e in tvm_eps
+                            if e.get("season") == season.number and e.get("number") is not None
+                        }
+                        if season_tvm:
+                            for ep in season.episodes:
+                                m_ep = season_tvm.get(ep.episode_number)
+                                if not m_ep:
+                                    continue
+                                ep_name = (m_ep.get("name") or "").strip()
+                                if ep_name:
+                                    if not ep.title or ep.title.lower().startswith("episodio"):
+                                        ep.title = f"Episodio {ep.episode_number}: {ep_name}"
+                                    else:
+                                        ep.title = f"{ep.title} - {ep_name}"
+                                if m_ep.get("summary") and not ep.description:
+                                    clean_summary = re.sub(r"<[^>]+>", "", m_ep["summary"]).strip()
+                                    ep.description = clean_summary
+                                img_obj = m_ep.get("image") or {}
+                                poster = (
+                                    (img_obj.get("original") or img_obj.get("medium"))
+                                    if isinstance(img_obj, dict)
+                                    else None
+                                )
+                                if poster and not ep.poster_url:
+                                    ep.poster_url = poster
+                except Exception as err:
+                    _LOGGER.debug("TVmaze enrich season %s failed: %s", season.number, err)
 
         return season

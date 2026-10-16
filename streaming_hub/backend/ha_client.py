@@ -273,16 +273,34 @@ class HACoreClient:
         poster_url: str | None = None,
         mime_type: str = "application/vnd.apple.mpegurl",
         subtitles: list[dict[str, Any]] | None = None,
+        media_type: str = "movie",
+        series_title: str | None = None,
+        season_number: int | None = None,
+        episode_number: int | None = None,
     ) -> tuple[bool, str]:
         """Send play_media command to specified Home Assistant entity with companion fallback."""
         if not self.is_available:
             _LOGGER.error("Cannot play media: SUPERVISOR_TOKEN not configured")
             return False, entity_id
 
+        cast_metadata: dict[str, Any] = {
+            "metadataType": 2 if media_type == "tv" else 1,
+            "title": title,
+            "images": [{"url": poster_url}] if poster_url else [],
+        }
+        if media_type == "tv":
+            if series_title:
+                cast_metadata["seriesTitle"] = series_title
+            if season_number is not None:
+                cast_metadata["season"] = season_number
+            if episode_number is not None:
+                cast_metadata["episode"] = episode_number
+
         extra_dict: dict[str, Any] = {
             "title": title,
             "thumb": poster_url,
             "stream_type": "BUFFERED",
+            "metadata": cast_metadata,
         }
         if subtitles:
             tracks = []
@@ -353,7 +371,7 @@ class HACoreClient:
             except Exception as err:
                 _LOGGER.debug("Fallback play_media without extra error: %s", err)
 
-        # Fallback 2: Retry with genuine streaming video formats (exclude 'url' which triggers Android intent failures)
+        # Fallback 2: Retry with genuine streaming video formats preserving metadata
         if not success:
             for alt_mime in ("video/mp4", "video", "application/x-mpegURL"):
                 _LOGGER.info("Retrying play_media on %s with media_content_type=%s...", entity_id, alt_mime)
@@ -361,6 +379,7 @@ class HACoreClient:
                     "entity_id": entity_id,
                     "media_content_id": media_url,
                     "media_content_type": alt_mime,
+                    "extra": extra_dict,
                 }
                 try:
                     async with (
@@ -597,38 +616,40 @@ class HACoreClient:
                 try:
                     async with aiohttp.ClientSession() as session, session.ws_connect(ws_url, timeout=10) as ws:
                         # 1. Receive auth_required
-                            msg = await ws.receive_json()
-                            if msg.get("type") == "auth_required":
-                                await ws.send_json({"type": "auth", "access_token": self.token})
-                                auth_resp = await ws.receive_json()
-                                if auth_resp.get("type") != "auth_ok":
-                                    _LOGGER.debug("HA WS auth failed: %s", auth_resp)
-                                    await asyncio.sleep(30)
-                                    continue
+                        msg = await ws.receive_json()
+                        if msg.get("type") == "auth_required":
+                            await ws.send_json({"type": "auth", "access_token": self.token})
+                            auth_resp = await ws.receive_json()
+                            if auth_resp.get("type") != "auth_ok":
+                                _LOGGER.debug("HA WS auth failed: %s", auth_resp)
+                                await asyncio.sleep(30)
+                                continue
 
-                            # 2. Subscribe to mobile_app_notification_action
-                            await ws.send_json({
+                        # 2. Subscribe to mobile_app_notification_action
+                        await ws.send_json(
+                            {
                                 "id": 1,
                                 "type": "subscribe_events",
                                 "event_type": "mobile_app_notification_action",
-                            })
-                            sub_resp = await ws.receive_json()
-                            _LOGGER.debug("HA WS subscribed to notification events: %s", sub_resp)
+                            }
+                        )
+                        sub_resp = await ws.receive_json()
+                        _LOGGER.debug("HA WS subscribed to notification events: %s", sub_resp)
 
-                            # 3. Event loop
-                            async for ws_msg in ws:
-                                if ws_msg.type == aiohttp.WSMsgType.TEXT:
-                                    data = ws_msg.json()
-                                    if data.get("type") == "event":
-                                        event = data.get("event", {})
-                                        event_data = event.get("data", {})
-                                        action = event_data.get("action")
-                                        if action == "STREAMING_HUB_PLAY_NEXT":
-                                            await self.handle_next_episode_action(action="play_now")
-                                        elif action == "STREAMING_HUB_STOP":
-                                            await self.handle_next_episode_action(action="cancel")
-                                elif ws_msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                                    break
+                        # 3. Event loop
+                        async for ws_msg in ws:
+                            if ws_msg.type == aiohttp.WSMsgType.TEXT:
+                                data = ws_msg.json()
+                                if data.get("type") == "event":
+                                    event = data.get("event", {})
+                                    event_data = event.get("data", {})
+                                    action = event_data.get("action")
+                                    if action == "STREAMING_HUB_PLAY_NEXT":
+                                        await self.handle_next_episode_action(action="play_now")
+                                    elif action == "STREAMING_HUB_STOP":
+                                        await self.handle_next_episode_action(action="cancel")
+                            elif ws_msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
                 except asyncio.CancelledError:
                     break
                 except Exception as err:
@@ -816,9 +837,7 @@ class HACoreClient:
         }
 
         if media_type == "tv" and season_number is not None and episode_number is not None:
-            asyncio.create_task(
-                self._prepare_next_episode(entity_id, media_id, season_number, episode_number)
-            )
+            asyncio.create_task(self._prepare_next_episode(entity_id, media_id, season_number, episode_number))
 
         task = asyncio.create_task(
             self._track_cast_playback(
@@ -1004,7 +1023,9 @@ class HACoreClient:
         except Exception as err:
             _LOGGER.warning("Error in Cast tracker for %s: %s", entity_id, err)
         finally:
-            if entity_id in self._countdown_tasks and not self._active_cast_sessions.get(entity_id, {}).get("countdown_active"):
+            if entity_id in self._countdown_tasks and not self._active_cast_sessions.get(entity_id, {}).get(
+                "countdown_active"
+            ):
                 self._countdown_tasks[entity_id].cancel()
             if self._cast_trackers.get(entity_id) is asyncio.current_task():
                 self._cast_trackers.pop(entity_id, None)
