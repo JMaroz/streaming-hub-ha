@@ -269,8 +269,8 @@ class ReactiveStreamClient:
         clean_fn = clean_fn.removeprefix("images/")
 
         clean_base = self.base_url.rstrip("/")
-        cdn_host = clean_base.replace("://", "://cdn.")
-        return f"{cdn_host}/images/{clean_fn}"
+        # ponytail: Modern mirrors serve images directly without requiring cdn. subdomains in DNS
+        return f"{clean_base}/images/{clean_fn}"
 
     @staticmethod
     def _extract_genre_names(item: dict[str, Any]) -> list[str]:

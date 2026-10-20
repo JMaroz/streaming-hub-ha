@@ -14,6 +14,7 @@ import aiohttp
 from fastapi import HTTPException
 from fastapi.responses import Response, StreamingResponse
 
+from .dns_resolver import DNS_DEFAULT, DoHResolver
 from .models import ResolvedMedia
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,23 +37,40 @@ class StreamSession:
 class StreamProxy:
     """In-memory manager for proxied media streams."""
 
-    def __init__(self, ttl_seconds: int = 14400) -> None:
+    def __init__(self, ttl_seconds: int = 14400, custom_dns: str = DNS_DEFAULT) -> None:
         """Initialize the stream proxy manager."""
         self.ttl = timedelta(seconds=ttl_seconds)
+        self.custom_dns = custom_dns
         self._sessions: dict[str, StreamSession] = {}
         self._http_session: aiohttp.ClientSession | None = None
+        self._resolver: DoHResolver | None = None
+
+    def set_custom_dns(self, custom_dns: str) -> None:
+        """Update custom DNS mode and reset session if changed."""
+        if custom_dns and custom_dns != self.custom_dns:
+            self.custom_dns = custom_dns
+            if self._http_session and not self._http_session.closed:
+                asyncio.create_task(self._http_session.close())
+                self._http_session = None
+            self._resolver = None
 
     async def _get_client_session(self) -> aiohttp.ClientSession:
-        """Get or initialize aiohttp ClientSession."""
+        """Get or initialize aiohttp ClientSession with configured DoH resolver."""
         if self._http_session and not self._http_session.closed:
             return self._http_session
-        self._http_session = aiohttp.ClientSession()
+        connector = None
+        if self.custom_dns and self.custom_dns != "system":
+            self._resolver = DoHResolver(mode=self.custom_dns)
+            connector = aiohttp.TCPConnector(resolver=self._resolver, ssl=False)
+        self._http_session = aiohttp.ClientSession(connector=connector)
         return self._http_session
 
     async def close(self) -> None:
-        """Close client session."""
+        """Close client session and resolver."""
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
+        if self._resolver:
+            await self._resolver.close()
 
     def register_stream(
         self,

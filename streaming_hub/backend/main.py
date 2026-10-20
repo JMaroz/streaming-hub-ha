@@ -87,11 +87,13 @@ def load_options() -> dict[str, Any]:
     normalized_sources: list[dict[str, Any]] = []
     for item in raw_sources:
         if isinstance(item, str) and item.strip():
-            normalized_sources.append({"url": item.strip(), "type": "auto", "name": "", "enabled": True})
+            c_url = SourceDetector.canonicalize_url(item.strip())
+            normalized_sources.append({"url": c_url, "type": "auto", "name": "", "enabled": True})
         elif isinstance(item, dict) and item.get("url"):
+            c_url = SourceDetector.canonicalize_url(str(item["url"]).strip())
             normalized_sources.append(
                 {
-                    "url": str(item["url"]).strip(),
+                    "url": c_url,
                     "type": str(item.get("type", "auto")).strip(),
                     "name": str(item.get("name", "")).strip(),
                     "enabled": bool(item.get("enabled", True)),
@@ -108,8 +110,10 @@ def load_options() -> dict[str, Any]:
         normalized_sources.append({"url": cb_env, "type": "crawler", "name": "Sorgente Web", "enabled": True})
 
     anime_env = os.getenv("SOURCE_ANIME_BASE_URL", "").strip() or os.getenv("ANIME_BASE_URL", "").strip()
-    if anime_env and not any(s["url"] == anime_env for s in normalized_sources):
-        normalized_sources.append({"url": anime_env, "type": "anime", "name": "Sorgente Anime", "enabled": True})
+    if anime_env:
+        anime_env = SourceDetector.canonicalize_url(anime_env)
+        if not any(s["url"] == anime_env for s in normalized_sources):
+            normalized_sources.append({"url": anime_env, "type": "anime", "name": "Sorgente Anime", "enabled": True})
 
     options["custom_sources"] = normalized_sources
 
@@ -163,7 +167,7 @@ logging.basicConfig(
 
 # Global components
 ha_client = HACoreClient()
-stream_proxy = StreamProxy()
+stream_proxy = StreamProxy(custom_dns=CONFIG.get("custom_dns", DNS_DEFAULT))
 metadata_enricher = MetadataEnricher(tmdb_api_key=CONFIG.get("tmdb_api_key"))
 db = MediaDatabase()
 subtitle_manager = SubtitleManager()
@@ -175,11 +179,13 @@ source_manager = SourceManager()
 
 async def init_sources(sources_list: list[dict[str, Any]], custom_dns: str) -> None:
     """Initialize and register configured user sources with auto-discrimination."""
+    stream_proxy.set_custom_dns(custom_dns)
     async with aiohttp.ClientSession() as session:
         for idx, src_conf in enumerate(sources_list):
-            url = src_conf.get("url", "").strip()
-            if not url:
+            raw_url = src_conf.get("url", "").strip()
+            if not raw_url:
                 continue
+            url = SourceDetector.canonicalize_url(raw_url)
             is_enabled = src_conf.get("enabled", True)
             user_type = src_conf.get("type", "auto")
             custom_name = src_conf.get("name") or ""
@@ -273,6 +279,7 @@ async def lifespan(app: FastAPI):
     _LOGGER.info("Starting Streaming Hub Engine...")
     await db.init()
     custom_dns = CONFIG.get("custom_dns", DNS_DEFAULT)
+    stream_proxy.set_custom_dns(custom_dns)
     custom_sources = CONFIG.get("custom_sources", [])
 
     if custom_sources:
@@ -2260,45 +2267,68 @@ async def handle_next_episode_action_endpoint(req: CastNextEpisodeActionRequest)
 
 # Proxy stream endpoints
 
+FALLBACK_POSTER_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450">'
+    '<rect width="300" height="450" fill="#18181b"/>'
+    '<path d="M110 190 L150 140 L190 190 Z" fill="#27272a"/>'
+    '<circle cx="130" cy="145" r="8" fill="#3f3f46"/>'
+    '<text x="50%" y="58%" fill="#71717a" font-family="system-ui, -apple-system, sans-serif" '
+    'font-size="13" text-anchor="middle" dominant-baseline="middle">Nessuna Immagine</text>'
+    '</svg>'
+)
+
 
 @app.get("/api/proxy/image")
 async def proxy_image(url: str = Query(..., description="Image URL to proxy")) -> Response:
-    """Proxy image requests to bypass CORS and referer blocks."""
+    """Proxy image requests to bypass CORS and referer blocks, with DoH and cdn fallback."""
     if not url or not url.startswith("http"):
         raise HTTPException(status_code=400, detail="Invalid URL")
 
-    try:
-        parsed = urlparse(url)
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Referer": f"{parsed.scheme}://{parsed.netloc}/",
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        }
+    # Generate candidate URLs to recover from missing cdn. subdomains or altered paths
+    candidates = [url]
+    if "://cdn." in url:
+        candidates.append(url.replace("://cdn.", "://"))
+    elif "://" in url and "streamingcommunity" in url:
+        candidates.append(url.replace("://", "://cdn."))
 
-        session = await stream_proxy._get_client_session()
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-            if resp.status != 200:
-                raise HTTPException(status_code=resp.status, detail="Image not found or blocked")
+    session = await stream_proxy._get_client_session()
 
-            content = await resp.read()
-            content_type = resp.headers.get("Content-Type", "image/jpeg")
-            return Response(
-                content=content,
-                media_type=content_type,
-                headers={
-                    "Cache-Control": "public, max-age=86400",
-                    "Access-Control-Allow-Origin": "*",
-                },
-            )
-    except HTTPException:
-        raise
-    except Exception as err:
-        err_msg = str(err).strip() or "Connection error"
-        _LOGGER.warning("Image proxy error for %s: %s (%s)", url, err_msg, type(err).__name__)
-        raise HTTPException(status_code=502, detail="Failed to fetch image") from err
+    for candidate_url in candidates:
+        try:
+            parsed = urlparse(candidate_url)
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Referer": f"{parsed.scheme}://{parsed.netloc}/",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            }
+            async with session.get(candidate_url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status == 200:
+                    content = await resp.read()
+                    content_type = resp.headers.get("Content-Type", "image/jpeg")
+                    return Response(
+                        content=content,
+                        media_type=content_type,
+                        headers={
+                            "Cache-Control": "public, max-age=86400",
+                            "Access-Control-Allow-Origin": "*",
+                        },
+                    )
+        except Exception as err:
+            _LOGGER.debug("Image proxy candidate %s failed: %s (%s)", candidate_url, err, type(err).__name__)
+
+    # Return neutral fallback SVG placeholder on failure to prevent broken image cards and 502 flood
+    _LOGGER.debug("All image candidates failed for %s, returning fallback placeholder", url)
+    return Response(
+        content=FALLBACK_POSTER_SVG,
+        media_type="image/svg+xml",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
 
 
 @app.api_route("/stream/{token}", methods=["GET", "HEAD"])

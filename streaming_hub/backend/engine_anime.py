@@ -19,6 +19,23 @@ from .models import Movie, ProviderSource, TvEpisode, TvSeason, TvSeries
 
 _LOGGER = logging.getLogger(__name__)
 
+CANONICAL_ANIME_DOMAIN = "https://www.animeunity.to"
+
+
+def canonicalize_anime_url(url: str) -> str:
+    """Canonicalize legacy or variant Anime Unity domains to active canonical domain."""
+    if not url:
+        return url
+    if "animeunity" in url.lower():
+        return re.sub(
+            r"https?://(?:www\.)?animeunity\.[a-z0-9\-]+",
+            CANONICAL_ANIME_DOMAIN,
+            url,
+            flags=re.IGNORECASE,
+        )
+    return url
+
+
 # Heuristic patterns for anime titles and classification
 _DUB_MARKERS = ("(ita)", "[ita]", " ita", "ita doppiato", "doppiato")
 _SUB_MARKERS = ("(sub ita)", "[sub ita]", " sub", "sub-ita", "sub ita")
@@ -42,7 +59,7 @@ class AnimeStreamClient:
         timeout: int = 15,
     ) -> None:
         """Initialize anime streaming client."""
-        self.base_url = (base_url or "").rstrip("/")
+        self.base_url = canonicalize_anime_url((base_url or "").rstrip("/"))
         self._custom_session = session is not None
         self._session = session
         self._custom_dns = custom_dns
@@ -87,15 +104,28 @@ class AnimeStreamClient:
             req_headers.update(headers)
 
         full_url = url if url.startswith("http") else urljoin(self.base_url + "/", url.lstrip("/"))
+        full_url = canonicalize_anime_url(full_url)
         try:
             async with asyncio.timeout(10):
                 if method.upper() == "POST":
-                    async with session.post(full_url, headers=req_headers, json=json_data) as resp:
+                    async with session.post(full_url, headers=req_headers, json=json_data, allow_redirects=True) as resp:
+                        if resp.url and "animeunity" in resp.url.host.lower():
+                            resp_base = f"{resp.url.scheme}://{resp.url.host}".rstrip("/")
+                            if resp_base != self.base_url:
+                                _LOGGER.info("Anime Unity base_url updated via redirect to %s", resp_base)
+                                self.base_url = resp_base
+                                self._reactive_client.base_url = f"{resp_base}/"
                         text = await resp.text(errors="ignore")
                         self._extract_csrf(text)
                         return text
                 else:
-                    async with session.get(full_url, headers=req_headers) as resp:
+                    async with session.get(full_url, headers=req_headers, allow_redirects=True) as resp:
+                        if resp.url and "animeunity" in resp.url.host.lower():
+                            resp_base = f"{resp.url.scheme}://{resp.url.host}".rstrip("/")
+                            if resp_base != self.base_url:
+                                _LOGGER.info("Anime Unity base_url updated via redirect to %s", resp_base)
+                                self.base_url = resp_base
+                                self._reactive_client.base_url = f"{resp_base}/"
                         text = await resp.text(errors="ignore")
                         self._extract_csrf(text)
                         return text
@@ -489,8 +519,14 @@ class AnimeStreamClient:
             return episode_id_or_url
 
         url = episode_id_or_url
-        if not url.startswith("http"):
+        match_id = re.search(r"/embed-url/(\d+)", episode_id_or_url)
+        if match_id:
+            ep_id = match_id.group(1)
+            url = f"{self.base_url}/embed-url/{ep_id}"
+        elif not url.startswith("http"):
             url = f"{self.base_url}/embed-url/{episode_id_or_url}"
+        else:
+            url = canonicalize_anime_url(url)
 
         text = await self._request(url)
         clean_text = text.strip().strip("\"'")

@@ -9,7 +9,7 @@ import aiohttp
 import pytest
 
 from streaming_hub.backend.dns_resolver import DoHResolver
-from streaming_hub.backend.engine_anime import AnimeStreamClient
+from streaming_hub.backend.engine_anime import AnimeStreamClient, canonicalize_anime_url
 from streaming_hub.backend.engine_crawler import CrawlerStreamClient
 from streaming_hub.backend.models import Movie, ProviderSource, ResolvedMedia, TvEpisode, TvSeason, TvSeries
 from streaming_hub.backend.sources.anime_source import AnimeSource
@@ -19,6 +19,55 @@ from streaming_hub.backend.sources.manager import SourceManager
 
 class TestAnimeStreamClient:
     """Test suite for AnimeStreamClient parsing and models."""
+
+    def test_canonicalize_anime_url(self) -> None:
+        assert canonicalize_anime_url("https://www.animeunity.so") == "https://www.animeunity.to"
+        assert canonicalize_anime_url("https://animeunity.so/anime/166") == "https://www.animeunity.to/anime/166"
+        assert canonicalize_anime_url("http://animeunity.tv") == "https://www.animeunity.to"
+        assert canonicalize_anime_url("https://animeunity.to") == "https://www.animeunity.to"
+        assert canonicalize_anime_url("https://other-anime-site.org") == "https://other-anime-site.org"
+
+    def test_client_canonicalizes_domain_on_init(self) -> None:
+        client = AnimeStreamClient(base_url="https://www.animeunity.so")
+        assert client.base_url == "https://www.animeunity.to"
+        assert client._reactive_client.base_url == "https://www.animeunity.to/"
+
+    @pytest.mark.asyncio
+    async def test_get_embed_url_rebases_legacy_db_url(self) -> None:
+        client = AnimeStreamClient(base_url="https://www.animeunity.to")
+        client._request = AsyncMock(return_value="https://vixcloud.co/embed/abc123signed")
+
+        # Passing full legacy URL stored in DB (e.g. from animeunity.so)
+        legacy_db_url = "https://www.animeunity.so/embed-url/3029"
+        res = await client.get_embed_url(legacy_db_url)
+
+        assert res == "https://vixcloud.co/embed/abc123signed"
+        # Must request the rebased URL on active base_url, not the obsolete domain
+        client._request.assert_awaited_once_with("https://www.animeunity.to/embed-url/3029")
+
+    @pytest.mark.asyncio
+    async def test_request_redirect_synchronizes_base_url(self) -> None:
+        client = AnimeStreamClient(base_url="https://animeunity.cc")
+
+        mock_resp = AsyncMock()
+        mock_resp.url = MagicMock()
+        mock_resp.url.scheme = "https"
+        mock_resp.url.host = "www.animeunity.to"
+        mock_resp.text = AsyncMock(return_value='<html><head><meta name="csrf-token" content="token123"></head></html>')
+
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.get.return_value.__aenter__.return_value = mock_resp
+        mock_session.close = AsyncMock()
+
+        client._session = mock_session
+        client._custom_session = True
+        try:
+            await client._request("https://animeunity.cc/test")
+            assert client.base_url == "https://www.animeunity.to"
+            assert client._reactive_client.base_url == "https://www.animeunity.to/"
+        finally:
+            await client.close()
 
     def test_clean_title_sub(self) -> None:
         client = AnimeStreamClient(base_url="https://anime.local")
@@ -451,6 +500,10 @@ class TestAnimeStreamClient:
 
 class TestSourceDetectorAnime:
     """Test suite for anime engine detection."""
+
+    def test_canonicalize_url(self) -> None:
+        assert SourceDetector.canonicalize_url("https://www.animeunity.so") == "https://www.animeunity.to"
+        assert SourceDetector.canonicalize_url("https://reactive.org") == "https://reactive.org"
 
     def test_heuristic_detection(self) -> None:
         assert SourceDetector.detect_by_heuristic("https://animeserver.com") == "anime"

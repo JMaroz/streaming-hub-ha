@@ -46,3 +46,7 @@ data/
 
 # Worktrees
 .worktrees/
+
+docs/plans/*
+
+docs/HANDOFF.md

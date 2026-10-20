@@ -29,9 +29,18 @@ class SourceDetector:
     """
 
     @classmethod
+    def canonicalize_url(cls, url: str) -> str:
+        """Canonicalize known provider URLs (e.g. normalize obsolete animeunity domains)."""
+        if not url:
+            return url
+        from ..engine_anime import canonicalize_anime_url
+
+        return canonicalize_anime_url(url)
+
+    @classmethod
     def detect_by_heuristic(cls, url: str) -> str | None:
         """Attempt fast heuristic detection based on domain and URL keywords."""
-        parsed = urlparse(url)
+        parsed = urlparse(cls.canonicalize_url(url))
         domain = (parsed.netloc or parsed.path).lower()
 
         # Anime engine patterns
@@ -64,7 +73,7 @@ class SourceDetector:
             session = aiohttp.ClientSession()
             close_session = True
 
-        clean_url = url.rstrip("/")
+        clean_url = cls.canonicalize_url(url).rstrip("/")
 
         try:
             async with session.get(
