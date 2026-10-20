@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.7](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.6...v3.0.7) (2026-10-20)
+
+
+### Bug Fixes
+
+* **proxy:** restore images and Anime Unity ([b9ede1b](https://github.com/JMaroz/streaming-hub-ha/commit/b9ede1b510a5650d2374243e842c1b9284efcd12))
+
 ## [3.0.6](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.5...v3.0.6) (2026-10-16)
 
 
