@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.9](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.8...v3.0.9) (2026-11-13)
+
+
+### Bug Fixes
+
+* **sources:** cross-enrich title details with mixdrop and crawler sources ([0684797](https://github.com/JMaroz/streaming-hub-ha/commit/0684797c84fd2f7644c7f5873a1851be5594eb92))
+
 ## [3.0.8](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.7...v3.0.8) (2026-11-13)
 
 
