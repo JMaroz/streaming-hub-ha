@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.10](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.9...v3.0.10) (2026-11-13)
+
+
+### Bug Fixes
+
+* **crawler:** label sources as Crawler and enable TV seasons cross-enrichment ([533cb39](https://github.com/JMaroz/streaming-hub-ha/commit/533cb399b006705edbcb0a29287ce0599e4843db))
+
 ## [3.0.9](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.8...v3.0.9) (2026-11-13)
 
 
