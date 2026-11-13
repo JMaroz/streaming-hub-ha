@@ -86,12 +86,16 @@ class CrawlerCatalogParser:
     )
 
     # Private compiled regex patterns for parse_sources
-    _TABLE_PATTERN = re.compile(
-        r'<table class="cbtable"[^>]*>(.*?)</table>\s*td>',
-        re.DOTALL,
+    _TABLE_SECTION_SPLIT = re.compile(r"<u><strong>(Streaming.*?|Download.*?):?</strong></u>", re.IGNORECASE)
+    _A_HREF_PATTERN = re.compile(r'<a\s+[^>]*href="([^"]+)"[^>]*>\s*([^<]+)\s*</a>', re.IGNORECASE)
+    _FANCY_TABS_DATA_SRC_PATTERN = re.compile(
+        r'class=[\'"]tabs-catch-all[\'"][^>]*data-src=[\'"]([^\'"]+)[\'"]',
+        re.IGNORECASE,
     )
-    _TABLE_SECTION_SPLIT = re.compile(r"<u><strong>(Streaming.*?|Download.*?):?</strong></u>")
-    _A_HREF_PATTERN = re.compile(r'<a href="([^"]+)"[^>]*>\s*([^<]+)\s*</a>')
+    _TV_CLEAN_SUFFIX_PATTERN = re.compile(
+        r"\s*[-–—]\s*(?:Stagion[ei]\s*\d+|COMPLETA|\d+x\d+|Sub-ITA|Serie\s*TV).*$",
+        re.IGNORECASE,
+    )
 
     # Private compiled regex patterns for parse_tv_series_page episodes
     _TV_TAGS_PATTERN = re.compile(
@@ -228,6 +232,7 @@ class CrawlerCatalogParser:
 
             media_id = cls.extract_media_id_from_url(movie_url)
             clean_title, year, _, title_cert = cls.clean_title(raw_title)
+            clean_title = cls._TV_CLEAN_SUFFIX_PATTERN.sub("", clean_title).strip()
 
             img_match = cls._CARD_IMG_PATTERN.search(card_html)
             poster_url = img_match.group(1).strip() if img_match else None
@@ -311,6 +316,7 @@ class CrawlerCatalogParser:
                 raw_title = title_tag.group(1)
 
         clean_title, year, _, title_cert = cls.clean_title(raw_title)
+        clean_title = cls._TV_CLEAN_SUFFIX_PATTERN.sub("", clean_title).strip()
 
         if not poster_url:
             og_img = cls._OG_IMAGE_PATTERN.search(html_text)
@@ -356,16 +362,11 @@ class CrawlerCatalogParser:
 
     @classmethod
     def parse_sources(cls, html_text: str, media_id: str) -> list[ProviderSource]:
-        """Extract streaming sources from the catalog table."""
+        """Extract streaming sources from the catalog table and interactive tabs."""
         sources: list[ProviderSource] = []
+        seen_urls: set[str] = set()
 
-        table_match = cls._TABLE_PATTERN.search(html_text)
-        if not table_match:
-            return sources
-
-        table_content = table_match.group(1)
-        sections = cls._TABLE_SECTION_SPLIT.split(table_content)
-
+        sections = cls._TABLE_SECTION_SPLIT.split(html_text)
         for i in range(1, len(sections), 2):
             sec_name = sections[i].strip()
             sec_body = sections[i + 1]
@@ -373,14 +374,23 @@ class CrawlerCatalogParser:
             if not sec_name.lower().startswith("streaming"):
                 continue
 
-            quality = "HD" if "HD" in sec_name else "SD"
+            quality = "HD" if "HD" in sec_name.upper() else "SD"
 
-            link_matches = cls._A_HREF_PATTERN.findall(sec_body)
+            link_matches = cls._A_HREF_PATTERN.findall(sec_body[:2500])
             for page_url, provider_raw in link_matches:
-                provider_name = provider_raw.strip()
-                provider_id = provider_name.lower().replace(" ", "_")
+                p_url = page_url.strip()
+                p_name = provider_raw.strip()
+                p_lower = p_name.lower()
 
-                url_hash = hashlib.md5(page_url.encode()).hexdigest()[:8]
+                if p_lower not in ("maxstream", "mixdrop") and not cls._HOSTING_URL_PATTERN.search(p_url):
+                    continue
+
+                if p_url in seen_urls:
+                    continue
+                seen_urls.add(p_url)
+
+                provider_id = "mixdrop" if "mixdrop" in p_lower else "maxstream"
+                url_hash = hashlib.md5(p_url.encode()).hexdigest()[:8]
                 source_id = f"{media_id}_{provider_id}_{quality.lower()}_{url_hash}"
 
                 sources.append(
@@ -388,14 +398,39 @@ class CrawlerCatalogParser:
                         id=source_id,
                         media_id=media_id,
                         provider_id=provider_id,
-                        provider_name=provider_name,
-                        page_url=page_url.strip(),
+                        provider_name=p_name.title(),
+                        page_url=p_url,
                         quality=quality,
                         language="ita",
                         available=True,
                     )
                 )
 
+        # Also extract direct embed sources from tabs if present
+        for match in cls._FANCY_TABS_DATA_SRC_PATTERN.finditer(html_text):
+            tab_url = match.group(1).strip()
+            if tab_url and tab_url not in seen_urls:
+                seen_urls.add(tab_url)
+                tab_lower = tab_url.lower()
+                prov_id = "mixdrop" if "stayonline" in tab_lower or "mixdrop" in tab_lower else "maxstream"
+                prov_name = "Mixdrop" if prov_id == "mixdrop" else "Maxstream"
+                url_hash = hashlib.md5(tab_url.encode()).hexdigest()[:8]
+                source_id = f"{media_id}_{prov_id}_hd_{url_hash}"
+                sources.append(
+                    ProviderSource(
+                        id=source_id,
+                        media_id=media_id,
+                        provider_id=prov_id,
+                        provider_name=prov_name,
+                        page_url=tab_url,
+                        quality="HD",
+                        language="ita",
+                        available=True,
+                    )
+                )
+
+        # Prioritize Mixdrop HD > Mixdrop SD > Maxstream
+        sources.sort(key=lambda s: (0 if s.provider_id == "mixdrop" else 1, 0 if s.quality == "HD" else 1))
         return sources
 
     @classmethod
@@ -445,6 +480,7 @@ class CrawlerCatalogParser:
                 raw_title = title_tag.group(1)
 
         clean_title, year, _, title_cert = cls.clean_title(raw_title)
+        clean_title = cls._TV_CLEAN_SUFFIX_PATTERN.sub("", clean_title).strip()
 
         if not poster_url:
             og_img = cls._OG_IMAGE_PATTERN.search(html_text)
@@ -508,6 +544,8 @@ class CrawlerCatalogParser:
 
                 if not valid_sources:
                     continue
+
+                valid_sources.sort(key=lambda s: 0 if "mixdrop" in s.provider_id else 1)
 
                 if season_num not in seasons_dict:
                     seasons_dict[season_num] = []

@@ -224,17 +224,29 @@ class SourceManager:
         if src and src.is_enabled:
             return await src.resolve_stream(source, prefer_fhd=prefer_fhd)
 
-        # 2. Match by URL keyword
+        # 2. Route known crawler providers directly
+        if source.provider_id in ("mixdrop", "maxstream"):
+            crawler_src = self.get_source("crawler")
+            if crawler_src and crawler_src.is_enabled:
+                return await crawler_src.resolve_stream(source, prefer_fhd=prefer_fhd)
+
+        # 3. Match by URL keyword or known crawler hosts
         url_lower = source.page_url.lower()
+        if any(h in url_lower for h in ("stayonline.pro", "uprot.net", "mixdrop", "m1xdrop", "maxstream")):
+            crawler_src = self.get_source("crawler")
+            if crawler_src and crawler_src.is_enabled:
+                return await crawler_src.resolve_stream(source, prefer_fhd=prefer_fhd)
+
         for s in self.get_enabled_sources():
             if s.source_id in url_lower:
                 return await s.resolve_stream(source, prefer_fhd=prefer_fhd)
 
-        # 3. Fallback: try each enabled source
+        # 4. Fallback: try each enabled source
         for s in self.get_enabled_sources():
             try:
                 return await s.resolve_stream(source, prefer_fhd=prefer_fhd)
-            except Exception:
+            except Exception as err:
+                _LOGGER.debug("Adapter %s failed to resolve source: %s", s.source_id, err)
                 continue
 
         raise ValueError(f"No suitable source adapter could resolve {source.provider_name} ({source.page_url})")
