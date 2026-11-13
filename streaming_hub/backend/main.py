@@ -1394,23 +1394,34 @@ async def get_title_details(
     cached_rec = await db.get_title_record(title_id)
     cached = cached_rec["data"] if cached_rec else None
 
+    # Determine if cache needs re-enrichment with newly enabled crawler
+    crawler_src = source_manager.get_source("crawler")
+    crawler_enabled = bool(crawler_src and crawler_src.is_enabled)
+    cached_has_crawler = (
+        "crawler" in cached.get("catalogs", [])
+        or any(s.get("provider_id") in ("mixdrop", "maxstream") for s in cached.get("sources", []))
+    ) if cached else False
+
     # Return cached data if fresh and refresh is not forced
     if cached and not refresh and cached_rec["age_seconds"] <= CACHE_TTL_ON_DEMAND_SECONDS:
-        if not is_title_allowed_for_profile(cached, profile):
-            raise HTTPException(
-                status_code=403, detail="Contenuto non disponibile per il profilo selezionato (restrizione d'età)."
-            )
-        # Check if TMDb key is configured but cached item is missing watch_providers
-        has_wp = bool(cached.get("watch_providers"))
-        if not tmdb_key or has_wp:
-            cached["is_favorite"] = await db.is_favorite(title_id, profile_id=profile.id)
-            cached["streaming_availability"] = extract_streaming_availability(cached, active_country)
-            cached["age_seconds"] = cached_rec["age_seconds"]
-            cached["updated_at"] = cached_rec["updated_at"]
-            return cached
+        if not (crawler_enabled and not cached_has_crawler):
+            if not is_title_allowed_for_profile(cached, profile):
+                raise HTTPException(
+                    status_code=403, detail="Contenuto non disponibile per il profilo selezionato (restrizione d'età)."
+                )
+            # Check if TMDb key is configured but cached item is missing watch_providers
+            has_wp = bool(cached.get("watch_providers"))
+            if not tmdb_key or has_wp:
+                cached["is_favorite"] = await db.is_favorite(title_id, profile_id=profile.id)
+                cached["streaming_availability"] = extract_streaming_availability(cached, active_country)
+                cached["age_seconds"] = cached_rec["age_seconds"]
+                cached["updated_at"] = cached_rec["updated_at"]
+                return cached
 
     try:
         item = await source_manager.get_details(media_type, title_id)
+        if cached and not getattr(item, "source_b_url", None) and cached.get("source_b_url"):
+            item.source_b_url = cached["source_b_url"]
     except Exception as err:
         _LOGGER.error("Error fetching title %s: %s", title_id, err)
         if cached:

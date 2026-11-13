@@ -108,6 +108,13 @@ class ReactiveSource(BaseSource):
         if not self.is_enabled:
             raise ValueError("Reactive source is disabled")
 
+        if not (
+            item_id.startswith("sc-")
+            or item_id.startswith("reactive-")
+            or (item_id.isdigit() and len(item_id) >= 1)
+        ):
+            raise ValueError(f"ID {item_id} does not belong to reactive source")
+
         if media_type in ("tv", "series"):
             series = await self._client.get_tv_series(item_id)
             if self.source_id not in series.catalogs:

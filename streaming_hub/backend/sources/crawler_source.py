@@ -93,12 +93,13 @@ class CrawlerSource(BaseSource):
         if not self.is_enabled:
             raise ValueError("Crawler source is disabled")
 
+        clean_id = item_id.removeprefix("crawler-").removeprefix("cb01-")
         if media_type in ("tv", "series"):
-            series = await self._client.get_tv_series(item_id)
+            series = await self._client.get_tv_series(clean_id)
             if self.source_id not in series.catalogs:
                 series.catalogs.append(self.source_id)
             return series
-        movie = await self._client.get_movie(item_id)
+        movie = await self._client.get_movie(clean_id)
         if self.source_id not in movie.catalogs:
             movie.catalogs.append(self.source_id)
         return movie
@@ -108,7 +109,8 @@ class CrawlerSource(BaseSource):
         if not self.is_enabled:
             raise ValueError("Crawler source is disabled")
 
-        series = await self._client.get_tv_series(series_id)
+        clean_id = series_id.removeprefix("crawler-").removeprefix("cb01-")
+        series = await self._client.get_tv_series(clean_id)
         for s in series.seasons:
             if s.number == season_number:
                 return s

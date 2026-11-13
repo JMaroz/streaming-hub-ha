@@ -158,6 +158,54 @@ class TestSourceManagerRoutingRegression:
         assert resolved.url == "https://cdn.example.com/stream.m3u8"
         assert resolved.stream_format == "hls"
 
+    @pytest.mark.asyncio
+    async def test_get_details_cross_enriches_sources(self) -> None:
+        """Test SourceManager.get_details cross-enriches primary reactive title with crawler sources."""
+        manager = SourceManager()
+
+        primary_movie = Movie(
+            id="sc-101-oppenheimer",
+            title="Oppenheimer",
+            year=2023,
+            catalogs=["reactive"],
+            sources=[ProviderSource(id="sc_s1", media_id="sc-101-oppenheimer", provider_id="reactive", provider_name="Reactive", page_url="https://sc.test/101")],
+        )
+
+        crawler_movie = Movie(
+            id="oppenheimer-hd-2023",
+            title="Oppenheimer",
+            year=2023,
+            catalogs=["crawler"],
+            source_b_url="https://cb01one.uno/oppenheimer-hd-2023/",
+            sources=[
+                ProviderSource(id="cb_s1", media_id="oppenheimer-hd-2023", provider_id="mixdrop", provider_name="Mixdrop", page_url="https://stayonline.pro/l/101"),
+                ProviderSource(id="cb_s2", media_id="oppenheimer-hd-2023", provider_id="maxstream", provider_name="Maxstream", page_url="https://uprot.net/101"),
+            ],
+        )
+
+        mock_reactive = MagicMock(spec=BaseSource)
+        mock_reactive.source_id = "reactive"
+        mock_reactive.is_enabled = True
+        mock_reactive.get_details = AsyncMock(return_value=primary_movie)
+
+        mock_crawler = MagicMock(spec=BaseSource)
+        mock_crawler.source_id = "crawler"
+        mock_crawler.is_enabled = True
+        mock_crawler.search = AsyncMock(return_value=[crawler_movie])
+        mock_crawler.get_details = AsyncMock(return_value=crawler_movie)
+
+        manager.register_source(mock_reactive)
+        manager.register_source(mock_crawler)
+
+        enriched = await manager.get_details("movie", "sc-101-oppenheimer")
+        assert "reactive" in enriched.catalogs
+        assert "crawler" in enriched.catalogs
+        assert len(enriched.sources) == 3
+        provider_ids = [s.provider_id for s in enriched.sources]
+        assert "reactive" in provider_ids
+        assert "mixdrop" in provider_ids
+        assert "maxstream" in provider_ids
+
 
 class TestStreamProxyMp4Regression:
     """Anti-regression tests for StreamProxy handling MP4 direct streams."""

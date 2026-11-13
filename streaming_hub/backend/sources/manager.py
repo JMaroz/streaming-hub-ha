@@ -176,7 +176,10 @@ class SourceManager:
         return merged_movies + merged_series
 
     async def get_details(self, media_type: str, item_id: str) -> Movie | TvSeries:
-        """Fetch details from the source managing this ID, or try available sources."""
+        """Fetch details from the source managing this ID, or try available sources, and cross-enrich."""
+        primary_item: Movie | TvSeries | None = None
+        primary_source_id: str | None = None
+
         # Check source prefix routing
         for source_id, src in self._sources.items():
             if not src.is_enabled:
@@ -184,16 +187,61 @@ class SourceManager:
             if item_id.startswith(f"{source_id}-") or (
                 source_id in ("reactive", "engine_alpha") and item_id.startswith("sc-")
             ):
-                return await src.get_details(media_type, item_id)
+                try:
+                    primary_item = await src.get_details(media_type, item_id)
+                    primary_source_id = source_id
+                    break
+                except Exception as err:
+                    _LOGGER.debug("Prefix routing %s failed for %s: %s", source_id, item_id, err)
 
         # Fallback: query enabled sources until found
+        if not primary_item:
+            for src in self.get_enabled_sources():
+                try:
+                    primary_item = await src.get_details(media_type, item_id)
+                    primary_source_id = src.source_id
+                    break
+                except Exception as err:
+                    _LOGGER.debug("Source %s failed to get_details for %s: %s", src.source_id, item_id, err)
+                    continue
+
+        if not primary_item:
+            raise ValueError(f"Title {item_id} not found on any active source")
+
+        # Cross-enrich with secondary sources (e.g. crawler)
+        await self._enrich_cross_sources(primary_item, media_type, exclude_source_id=primary_source_id)
+
+        return primary_item
+
+    async def _enrich_cross_sources(
+        self,
+        item: Movie | TvSeries,
+        media_type: str,
+        exclude_source_id: str | None = None,
+    ) -> None:
+        """Enrich a resolved title by searching and merging sources from other active providers."""
         for src in self.get_enabled_sources():
-            try:
-                return await src.get_details(media_type, item_id)
-            except Exception:
+            if src.source_id == exclude_source_id:
                 continue
 
-        raise ValueError(f"Title {item_id} not found on any active source")
+            try:
+                if src.source_id == "crawler":
+                    crawler_target = getattr(item, "source_b_url", None)
+                    if not crawler_target and item.title and item.title.strip() not in ("", "Senza Titolo"):
+                        candidates = await src.search(item.title, media_type=media_type)
+                        match = next((c for c in candidates if CatalogMerger.is_same_media(item, c)), None)
+                        if match:
+                            crawler_target = match.source_b_url or match.id
+
+                    if crawler_target:
+                        if isinstance(item, Movie):
+                            c_item = await src.get_details("movie", crawler_target)
+                            CatalogMerger.merge_movie(item, c_item)
+                        elif isinstance(item, TvSeries):
+                            c_item = await src.get_details("tv", crawler_target)
+                            CatalogMerger.merge_tv_series(item, c_item)
+            except Exception as err:
+                _LOGGER.debug("Failed cross-source enrichment from %s for %s: %s", src.source_id, item.title, err)
 
     async def get_season(self, series_id: str, season_number: int) -> TvSeason:
         """Fetch season details from the appropriate source."""
