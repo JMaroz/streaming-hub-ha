@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.8](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.7...v3.0.8) (2026-11-13)
+
+
+### Bug Fixes
+
+* **crawler:** improve TV and Mixdrop playback ([119f4ee](https://github.com/JMaroz/streaming-hub-ha/commit/119f4ee54f4c40d4170419bac27bdacc7af7b18b))
+
 ## [3.0.7](https://github.com/JMaroz/streaming-hub-ha/compare/v3.0.6...v3.0.7) (2026-10-20)
 
 
