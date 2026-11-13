@@ -182,6 +182,7 @@ class CatalogMerger:
                     return False
                 if year1 and year2:
                     return abs(year1 - year2) <= 1
+                return True
 
         return False
 

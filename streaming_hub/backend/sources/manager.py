@@ -230,6 +230,18 @@ class SourceManager:
                     if not crawler_target and item.title and item.title.strip() not in ("", "Senza Titolo"):
                         candidates = await src.search(item.title, media_type=media_type)
                         match = next((c for c in candidates if CatalogMerger.is_same_media(item, c)), None)
+                        if not match and any(sep in item.title for sep in (":", " - ", " – ")):
+                            for sep in (":", " - ", " – "):
+                                if sep in item.title:
+                                    part = item.title.split(sep)[0].strip()
+                                    if len(part) >= 3:
+                                        sub_candidates = await src.search(part, media_type=media_type)
+                                        match = next(
+                                            (c for c in sub_candidates if CatalogMerger.is_same_media(item, c)),
+                                            None,
+                                        )
+                                        if match:
+                                            break
                         if match:
                             crawler_target = match.source_b_url or match.id
 
@@ -243,23 +255,75 @@ class SourceManager:
             except Exception as err:
                 _LOGGER.debug("Failed cross-source enrichment from %s for %s: %s", src.source_id, item.title, err)
 
-    async def get_season(self, series_id: str, season_number: int) -> TvSeason:
-        """Fetch season details from the appropriate source."""
+    async def get_season(
+        self,
+        series_id: str,
+        season_number: int,
+        series_title: str | None = None,
+        source_b_url: str | None = None,
+    ) -> TvSeason:
+        """Fetch season details from the appropriate source, with cross-enrichment for secondary sources."""
+        primary_season: TvSeason | None = None
         for source_id, src in self._sources.items():
             if not src.is_enabled:
                 continue
             if series_id.startswith(f"{source_id}-") or (
                 source_id in ("reactive", "engine_alpha") and series_id.startswith("sc-")
             ):
-                return await src.get_season(series_id, season_number)
+                primary_season = await src.get_season(series_id, season_number)
+                break
 
-        for src in self.get_enabled_sources():
+        if not primary_season:
+            for src in self.get_enabled_sources():
+                try:
+                    primary_season = await src.get_season(series_id, season_number)
+                    break
+                except Exception:
+                    continue
+
+        if not primary_season:
+            raise ValueError(f"Season {season_number} for {series_id} not found")
+
+        # Cross-enrich season episodes with crawler if available
+        crawler_src = self.get_source("crawler")
+        if (
+            crawler_src
+            and crawler_src.is_enabled
+            and not series_id.startswith("crawler-")
+            and not series_id.startswith("cb01-")
+        ):
             try:
-                return await src.get_season(series_id, season_number)
-            except Exception:
-                continue
+                crawler_target = source_b_url
+                if not crawler_target and series_title and series_title.strip() not in ("", "Senza Titolo"):
+                    candidates = await crawler_src.search(series_title, media_type="tv")
+                    dummy = TvSeries(id=series_id, title=series_title, catalogs=[], seasons=[])
+                    match = next((c for c in candidates if CatalogMerger.is_same_media(dummy, c)), None)
+                    if not match and any(sep in series_title for sep in (":", " - ", " – ")):
+                        for sep in (":", " - ", " – "):
+                            if sep in series_title:
+                                part = series_title.split(sep)[0].strip()
+                                if len(part) >= 3:
+                                    sub_c = await crawler_src.search(part, media_type="tv")
+                                    match = next((c for c in sub_c if CatalogMerger.is_same_media(dummy, c)), None)
+                                    if match:
+                                        break
+                    if match:
+                        crawler_target = match.source_b_url or match.id
 
-        raise ValueError(f"Season {season_number} for {series_id} not found")
+                if crawler_target:
+                    c_season = await crawler_src.get_season(crawler_target, season_number)
+                    c_ep_map = {e.episode_number: e for e in c_season.episodes}
+                    for ep in primary_season.episodes:
+                        if ep.episode_number in c_ep_map:
+                            ep.sources = CatalogMerger.merge_sources(
+                                ep.sources, c_ep_map[ep.episode_number].sources, series_id
+                            )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Crawler season cross-enrichment failed for %s S%s: %s", series_id, season_number, err
+                )
+
+        return primary_season
 
     async def resolve_stream(
         self,

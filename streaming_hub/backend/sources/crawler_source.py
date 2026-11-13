@@ -126,11 +126,12 @@ class CrawlerSource(BaseSource):
         if not self.is_enabled:
             raise ValueError("Crawler source is disabled")
 
-        prov_id = source.provider_id.lower()
-        if "maxstream" in prov_id:
+        prov_id = (source.provider_id or "").lower()
+        url_lower = (source.page_url or "").lower()
+        if "maxstream" in prov_id or "maxstream" in url_lower:
             session = await self._client._get_session()
             return await self._maxstream.resolve(source, session, prefer_fhd=prefer_fhd)
-        if "mixdrop" in prov_id:
+        if "mixdrop" in prov_id or "mixdrop" in url_lower or "stayonline" in url_lower:
             session = await self._client._get_session()
             return await self._mixdrop.resolve(source, session, prefer_fhd=prefer_fhd)
 

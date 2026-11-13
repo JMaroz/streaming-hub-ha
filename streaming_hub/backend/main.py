@@ -1399,7 +1399,10 @@ async def get_title_details(
     crawler_enabled = bool(crawler_src and crawler_src.is_enabled)
     cached_has_crawler = (
         "crawler" in cached.get("catalogs", [])
-        or any(s.get("provider_id") in ("mixdrop", "maxstream") for s in cached.get("sources", []))
+        or any(
+            s.get("provider_name", "").startswith("Crawler") or s.get("provider_id") in ("mixdrop", "maxstream")
+            for s in cached.get("sources", [])
+        )
     ) if cached else False
 
     # Return cached data if fresh and refresh is not forced
@@ -1552,21 +1555,36 @@ async def get_season_episodes(
     _ = get_profile_by_id(profile_id)
     cached_rec = await db.get_season_record(series_id, season_number)
 
+    crawler_src = source_manager.get_source("crawler")
+    crawler_enabled = bool(crawler_src and crawler_src.is_enabled)
+    cached_has_crawler = (
+        any(
+            s.provider_name.startswith("Crawler") or s.provider_id in ("mixdrop", "maxstream")
+            for ep in cached_rec["season"].episodes
+            for s in ep.sources
+        )
+    ) if (cached_rec and cached_rec.get("season") and cached_rec["season"].episodes) else False
+
     if cached_rec and not refresh and cached_rec["age_seconds"] <= CACHE_TTL_ON_DEMAND_SECONDS:
-        res = cached_rec["season"].to_dict()
-        res["age_seconds"] = cached_rec["age_seconds"]
-        res["updated_at"] = cached_rec["updated_at"]
-        return res
+        if not (crawler_enabled and not cached_has_crawler):
+            res = cached_rec["season"].to_dict()
+            res["age_seconds"] = cached_rec["age_seconds"]
+            res["updated_at"] = cached_rec["updated_at"]
+            return res
+
+    title_data = await db.get_title(series_id)
+    tmdb_id = title_data.get("tmdb_id") if title_data else None
+    imdb_id = title_data.get("imdb_id") if title_data else None
+    s_title = title_data.get("title") if title_data else None
+    s_b_url = title_data.get("source_b_url") if title_data else None
 
     try:
-        season = await source_manager.get_season(series_id, season_number)
+        season = await source_manager.get_season(
+            series_id, season_number, series_title=s_title, source_b_url=s_b_url
+        )
         if not season or not season.episodes or season.number != season_number:
             raise HTTPException(status_code=404, detail=f"Stagione {season_number} non trovata")
         # Enrich season episodes with TMDb, Cinemeta, or TVmaze
-        title_data = await db.get_title(series_id)
-        tmdb_id = title_data.get("tmdb_id") if title_data else None
-        imdb_id = title_data.get("imdb_id") if title_data else None
-        s_title = title_data.get("title") if title_data else None
         await metadata_enricher.enrich_tv_season(
             tmdb_id, season, imdb_id=imdb_id, series_title=s_title
         )

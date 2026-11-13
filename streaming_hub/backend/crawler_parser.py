@@ -93,7 +93,7 @@ class CrawlerCatalogParser:
         re.IGNORECASE,
     )
     _TV_CLEAN_SUFFIX_PATTERN = re.compile(
-        r"\s*[-–—]\s*(?:Stagion[ei]\s*\d+|COMPLETA|\d+x\d+|Sub-ITA|Serie\s*TV).*$",
+        r"\s*[-–—]\s*(?:Stagion[ei]\s*\d+|\d+°\s*Stagione|COMPLETA|\d+\s*[xX×]\s*\d+|Sub-ITA|Serie\s*TV|ITA).*$",
         re.IGNORECASE,
     )
 
@@ -398,7 +398,7 @@ class CrawlerCatalogParser:
                         id=source_id,
                         media_id=media_id,
                         provider_id=provider_id,
-                        provider_name=p_name.title(),
+                        provider_name="Crawler",
                         page_url=p_url,
                         quality=quality,
                         language="ita",
@@ -413,7 +413,6 @@ class CrawlerCatalogParser:
                 seen_urls.add(tab_url)
                 tab_lower = tab_url.lower()
                 prov_id = "mixdrop" if "stayonline" in tab_lower or "mixdrop" in tab_lower else "maxstream"
-                prov_name = "Mixdrop" if prov_id == "mixdrop" else "Maxstream"
                 url_hash = hashlib.md5(tab_url.encode()).hexdigest()[:8]
                 source_id = f"{media_id}_{prov_id}_hd_{url_hash}"
                 sources.append(
@@ -421,7 +420,7 @@ class CrawlerCatalogParser:
                         id=source_id,
                         media_id=media_id,
                         provider_id=prov_id,
-                        provider_name=prov_name,
+                        provider_name="Crawler",
                         page_url=tab_url,
                         quality="HD",
                         language="ita",
@@ -431,6 +430,15 @@ class CrawlerCatalogParser:
 
         # Prioritize Mixdrop HD > Mixdrop SD > Maxstream
         sources.sort(key=lambda s: (0 if s.provider_id == "mixdrop" else 1, 0 if s.quality == "HD" else 1))
+
+        # Assign clean labels: Crawler [HD], Crawler (Alt) [HD]
+        seen_qualities: set[str] = set()
+        for s in sources:
+            if s.quality in seen_qualities:
+                s.provider_name = "Crawler (Alt)"
+            else:
+                s.provider_name = "Crawler"
+                seen_qualities.add(s.quality)
         return sources
 
     @classmethod
@@ -525,7 +533,11 @@ class CrawlerCatalogParser:
                             else:
                                 name = "Unknown"
 
-                        provider_id = name.lower().replace(" ", "_").replace(".", "")
+                        provider_id = (
+                            "mixdrop"
+                            if ("mixdrop" in name.lower() or "mixdrop" in url.lower() or "stayonline" in url.lower())
+                            else "maxstream"
+                        )
                         url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
                         source_id = f"{series_id}_s{season_num}e{ep_num}_{provider_id}_hd_{url_hash}"
 
@@ -534,7 +546,7 @@ class CrawlerCatalogParser:
                                 id=source_id,
                                 media_id=series_id,
                                 provider_id=provider_id,
-                                provider_name=name,
+                                provider_name="Crawler",
                                 page_url=url.strip(),
                                 quality="HD",
                                 language="ita",
@@ -546,6 +558,8 @@ class CrawlerCatalogParser:
                     continue
 
                 valid_sources.sort(key=lambda s: 0 if "mixdrop" in s.provider_id else 1)
+                for idx, s in enumerate(valid_sources):
+                    s.provider_name = "Crawler" if idx == 0 else "Crawler (Alt)"
 
                 if season_num not in seasons_dict:
                     seasons_dict[season_num] = []

@@ -206,6 +206,95 @@ class TestSourceManagerRoutingRegression:
         assert "mixdrop" in provider_ids
         assert "maxstream" in provider_ids
 
+    @pytest.mark.asyncio
+    async def test_get_season_cross_enriches_episodes(self) -> None:
+        """Test SourceManager.get_season cross-enriches primary reactive season with crawler episodes."""
+        from streaming_hub.backend.models import TvEpisode, TvSeason
+
+        manager = SourceManager()
+
+        ep1_reactive = TvEpisode(
+            id="sc-ep-1",
+            media_id="sc-5369",
+            season_number=1,
+            episode_number=1,
+            title="L'Ombra del Passato",
+            sources=[
+                ProviderSource(
+                    id="sc-ep1-src",
+                    media_id="sc-5369",
+                    provider_id="reactive",
+                    provider_name="Reactive",
+                    page_url="https://sc.test/watch/1",
+                )
+            ],
+        )
+        season_reactive = TvSeason(number=1, episodes=[ep1_reactive])
+
+        ep1_crawler = TvEpisode(
+            id="cb01-ep-1",
+            media_id="crawler-rings-of-power",
+            season_number=1,
+            episode_number=1,
+            title="Episodio 1",
+            sources=[
+                ProviderSource(
+                    id="cb-ep1-src",
+                    media_id="crawler-rings-of-power",
+                    provider_id="mixdrop",
+                    provider_name="Crawler",
+                    page_url="https://stayonline.pro/l/ep1/",
+                    quality="HD",
+                )
+            ],
+        )
+        season_crawler = TvSeason(number=1, episodes=[ep1_crawler])
+
+        mock_reactive = MagicMock(spec=BaseSource)
+        mock_reactive.source_id = "reactive"
+        mock_reactive.is_enabled = True
+        mock_reactive.get_season = AsyncMock(return_value=season_reactive)
+
+        mock_crawler = MagicMock(spec=BaseSource)
+        mock_crawler.source_id = "crawler"
+        mock_crawler.is_enabled = True
+        mock_crawler.get_season = AsyncMock(return_value=season_crawler)
+
+        manager.register_source(mock_reactive)
+        manager.register_source(mock_crawler)
+
+        enriched_season = await manager.get_season(
+            "sc-5369-il-signore-degli-anelli",
+            season_number=1,
+            source_b_url="https://cb01one.uno/serietv/anelli-del-potere/",
+        )
+        assert len(enriched_season.episodes) == 1
+        ep = enriched_season.episodes[0]
+        assert len(ep.sources) == 2
+        prov_names = [s.provider_name for s in ep.sources]
+        assert "Reactive" in prov_names
+        assert "Crawler" in prov_names
+
+
+class TestCatalogMatchingRegression:
+    """Anti-regression tests for title matching with subtitles, colons, and dashes."""
+
+    def test_titles_match_with_subtitles_and_partial_order(self) -> None:
+        """Test titles with inverted subtitle/main title order and missing year on one side match."""
+        # 883 title inversion
+        t1 = "Nord Sud Ovest Est: La leggendaria storia degli 883"
+        t2 = "La leggendaria storia degli 883 – Nord Sud Ovest Est"
+        assert CatalogMerger.titles_match(t1, 2024, t2, None)
+
+        # Rings of Power match with missing year on cb01
+        p1 = "Il Signore degli Anelli: Gli Anelli del Potere"
+        p2 = "Il Signore degli Anelli: Gli anelli del potere"
+        assert CatalogMerger.titles_match(p1, 2022, p2, None)
+
+        # Different franchise sequel must NOT match
+        assert not CatalogMerger.titles_match("Dune", 2021, "Dune 2", 2024)
+        assert not CatalogMerger.titles_match("Spider-Man", 2002, "Spider-Man", 2012)
+
 
 class TestStreamProxyMp4Regression:
     """Anti-regression tests for StreamProxy handling MP4 direct streams."""

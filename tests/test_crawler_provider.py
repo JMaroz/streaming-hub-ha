@@ -86,13 +86,15 @@ class TestCrawlerCatalogParser:
         """
         sources = CrawlerCatalogParser.parse_sources(html, media_id="oppenheimer")
         assert len(sources) >= 2
-        # Prioritized Mixdrop over Maxstream
+        # Prioritized Mixdrop over Maxstream and labeled as Crawler
         assert sources[0].provider_id == "mixdrop"
+        assert sources[0].provider_name == "Crawler"
         assert sources[0].quality == "HD"
         assert sources[0].page_url == "https://stayonline.pro/l/133528/"
 
         maxstream_src = [s for s in sources if s.provider_id == "maxstream"]
         assert len(maxstream_src) == 1
+        assert maxstream_src[0].provider_name == "Crawler (Alt)"
         assert maxstream_src[0].page_url == "https://uprot.net/ms/54321/"
 
     def test_parse_tv_series_page(self) -> None:
@@ -120,6 +122,7 @@ class TestCrawlerCatalogParser:
         assert ep1.episode_number == 1
         assert len(ep1.sources) == 1
         assert ep1.sources[0].provider_id == "mixdrop"
+        assert ep1.sources[0].provider_name == "Crawler"
         assert ep1.sources[0].page_url == "https://stayonline.pro/l/901/"
 
 
